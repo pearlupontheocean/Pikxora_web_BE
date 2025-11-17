@@ -77,8 +77,15 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/team', teamRoutes);
 app.use('/api/upload', uploadRoutes);
 
+// Export app for Vercel serverless functions
+export default app;
+
+// Only start server if not in Vercel environment
 const PORT = process.env.PORT || 5001;
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+// Vercel provides PORT automatically, but we check if we're in a serverless environment
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+  });
+}
