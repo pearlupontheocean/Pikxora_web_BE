@@ -3,6 +3,7 @@ import Wall from '../models/Wall.js';
 import Project from '../models/Project.js';
 import TeamMember from '../models/TeamMember.js';
 import Profile from '../models/Profile.js';
+import User from '../models/User.js';
 import { protect } from '../middleware/auth.js';
 import { 
   isBase64Image, 
@@ -104,27 +105,67 @@ router.put('/:id/view', async (req, res) => {
 });
 
 // @route   GET /api/walls
-// @desc    Get all published walls
+// @desc    Get all published walls (excluding artist walls)
 // @access  Public
 router.get('/', async (req, res) => {
   try {
     // Optimize: Use lean() and limit results for better performance
     const walls = await Wall.find({ published: true })
       .select('-__v') // Exclude version key
-      .populate('user_id', 'name email rating location associations')
+      .populate('user_id', 'name email rating location associations user_id')
       .sort({ createdAt: -1 })
       .limit(100) // Limit results to prevent huge responses
       .lean(); // Use lean for better performance
     
+    // Get all unique user IDs from profiles to fetch user roles efficiently
+    const profileUserIds = walls
+      .map(wall => {
+        // Handle both ObjectId and string formats
+        const userId = wall.user_id?.user_id;
+        return userId ? (userId.toString ? userId.toString() : String(userId)) : null;
+      })
+      .filter(Boolean)
+      .filter((id, index, self) => self.indexOf(id) === index); // Get unique IDs
+    
+    // Fetch all users with their roles in one query
+    const users = await User.find({ _id: { $in: profileUserIds } })
+      .select('_id roles')
+      .lean();
+    
+    // Create a map of user_id to roles for quick lookup
+    const userRolesMap = new Map(users.map(user => [user._id.toString(), user.roles || []]));
+    
+    // Filter out artist walls BEFORE processing
+    const nonArtistWalls = walls.filter((wall) => {
+      if (!wall.user_id || !wall.user_id.user_id) {
+        // If we can't determine the user, exclude it for safety
+        return false;
+      }
+      // Handle both ObjectId and string formats
+      const userIdObj = wall.user_id.user_id;
+      const userId = userIdObj.toString ? userIdObj.toString() : String(userIdObj);
+      const roles = userRolesMap.get(userId) || [];
+      // Exclude walls created by users with 'artist' role
+      const isArtist = Array.isArray(roles) && roles.includes('artist');
+      return !isArtist;
+    });
+    
     // Convert file paths to base64 for frontend
     // Note: walls are already plain objects due to lean()
     const wallsWithBase64 = await Promise.all(
-      walls.map(async (wall) => {
+      nonArtistWalls.map(async (wall) => {
         const wallObj = wall; // Already a plain object with lean()
         
         // Add rating directly from populated user_id (profile) for easier frontend access
         if (wallObj.user_id && wallObj.user_id.rating) {
           wallObj.rating = wallObj.user_id.rating;
+        }
+        
+        // Add roles from user to user_id object for easier frontend access
+        if (wallObj.user_id && wallObj.user_id.user_id) {
+          const userId = wallObj.user_id.user_id.toString();
+          const roles = userRolesMap.get(userId) || [];
+          wallObj.user_id.roles = roles;
         }
         
         // Convert logo_url if it's a file path
