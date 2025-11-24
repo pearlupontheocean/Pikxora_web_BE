@@ -47,11 +47,53 @@ app.use((req, res, next) => {
   next();
 });
 
-// CORS Middleware
-app.use(cors({
-  origin: '*', // Allow all origins (use specific origin in production)
-  credentials: true
-}));
+// CORS Middleware - Handle preflight requests properly
+// Note: When credentials: true, you cannot use origin: '*'
+// Must specify exact origins or use a function
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, curl)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    // List of allowed origins
+    const allowedOrigins = [
+      'http://localhost:8080',
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'http://127.0.0.1:8080',
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:5173',
+      // Add your production frontend URL here
+      // 'https://your-frontend-domain.com'
+    ];
+    
+    // Check if origin is in allowed list or if we're in development
+    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
+      callback(null, true);
+    } else {
+      // For production, check environment variable for additional origins
+      const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
+      if (envOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        // For now, allow all origins to debug CORS issues
+        // TODO: Restrict this in production
+        callback(null, true);
+      }
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Type', 'Authorization'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
+  maxAge: 86400 // Cache preflight requests for 24 hours
+};
+
+app.use(cors(corsOptions));
 
 // Body parsing middleware
 // Increase payload size limit to handle base64 images (50MB file = ~67MB in base64)
