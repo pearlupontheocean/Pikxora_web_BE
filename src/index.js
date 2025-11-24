@@ -66,7 +66,7 @@ const corsOptions = {
       'http://127.0.0.1:3000',
       'http://127.0.0.1:5173',
       // Add your production frontend URL here
-      // 'https://your-frontend-domain.com'
+      'https://pikxora-web-fe.vercel.app'
     ];
     
     // Check if origin is in allowed list or if we're in development
