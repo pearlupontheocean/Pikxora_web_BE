@@ -8,9 +8,11 @@ import {
   isBase64Image, 
   isBase64Video,
   isEmbedUrl,
-  convertFilePathToBase64, 
-  validateBase64ImageSize,
-  cleanBase64String
+  isCloudinaryUrl,
+  uploadBase64ToCloudinary,
+  deleteFromCloudinary,
+  extractPublicIdFromUrl,
+  validateBase64ImageSize
 } from '../utils/imageUtils.js';
 
 const router = express.Router();
@@ -37,45 +39,22 @@ router.get('/my', protect, async (req, res) => {
       .sort({ createdAt: -1 })
       .lean(); // Use lean for better performance
     
-    // Convert file paths to base64 for frontend
-    // Note: walls are already plain objects due to lean()
-    const wallsWithBase64 = await Promise.all(
-      walls.map(async (wall) => {
-        const wallObj = wall; // Already a plain object with lean()
-        
-        // Add rating directly from populated user_id (profile) for easier frontend access
-        if (wallObj.user_id && wallObj.user_id.rating) {
-          wallObj.rating = wallObj.user_id.rating;
-        } else if (profile.rating) {
-          // Fallback to profile rating if populate didn't work
-          wallObj.rating = profile.rating;
-        }
-        
-        // Convert logo_url if it's a file path
-        if (wallObj.logo_url && wallObj.logo_url.startsWith('/uploads/') && !isBase64Image(wallObj.logo_url)) {
-          try {
-            wallObj.logo_url = await convertFilePathToBase64(wallObj.logo_url);
-          } catch (error) {
-            console.error('Error converting logo to base64:', error);
-            // Keep original path if conversion fails
-          }
-        }
-        
-        // Convert hero_media_url if it's a file path
-        if (wallObj.hero_media_url && wallObj.hero_media_url.startsWith('/uploads/') && !isBase64Image(wallObj.hero_media_url)) {
-          try {
-            wallObj.hero_media_url = await convertFilePathToBase64(wallObj.hero_media_url);
-          } catch (error) {
-            console.error('Error converting hero media to base64:', error);
-            // Keep original path if conversion fails
-          }
-        }
-        
-        return wallObj;
-      })
-    );
+    // Cloudinary URLs are ready to use, no conversion needed
+    const wallsWithUrls = walls.map((wall) => {
+      const wallObj = wall; // Already a plain object with lean()
+      
+      // Add rating directly from populated user_id (profile) for easier frontend access
+      if (wallObj.user_id && wallObj.user_id.rating) {
+        wallObj.rating = wallObj.user_id.rating;
+      } else if (profile.rating) {
+        // Fallback to profile rating if populate didn't work
+        wallObj.rating = profile.rating;
+      }
+      
+      return wallObj;
+    });
     
-    res.json(wallsWithBase64);
+    res.json(wallsWithUrls);
   } catch (error) {
     console.error('Get my walls error:', error);
     res.status(500).json({ error: error.message });
@@ -116,42 +95,19 @@ router.get('/', async (req, res) => {
       .limit(100) // Limit results to prevent huge responses
       .lean(); // Use lean for better performance
     
-    // Convert file paths to base64 for frontend
-    // Note: walls are already plain objects due to lean()
-    const wallsWithBase64 = await Promise.all(
-      walls.map(async (wall) => {
-        const wallObj = wall; // Already a plain object with lean()
-        
-        // Add rating directly from populated user_id (profile) for easier frontend access
-        if (wallObj.user_id && wallObj.user_id.rating) {
-          wallObj.rating = wallObj.user_id.rating;
-        }
-        
-        // Convert logo_url if it's a file path
-        if (wallObj.logo_url && wallObj.logo_url.startsWith('/uploads/') && !isBase64Image(wallObj.logo_url)) {
-          try {
-            wallObj.logo_url = await convertFilePathToBase64(wallObj.logo_url);
-          } catch (error) {
-            console.error('Error converting logo to base64:', error);
-            // Keep original path if conversion fails
-          }
-        }
-        
-        // Convert hero_media_url if it's a file path
-        if (wallObj.hero_media_url && wallObj.hero_media_url.startsWith('/uploads/') && !isBase64Image(wallObj.hero_media_url)) {
-          try {
-            wallObj.hero_media_url = await convertFilePathToBase64(wallObj.hero_media_url);
-          } catch (error) {
-            console.error('Error converting hero media to base64:', error);
-            // Keep original path if conversion fails
-          }
-        }
-        
-        return wallObj;
-      })
-    );
+    // Cloudinary URLs are ready to use, no conversion needed
+    const wallsWithUrls = walls.map((wall) => {
+      const wallObj = wall; // Already a plain object with lean()
+      
+      // Add rating directly from populated user_id (profile) for easier frontend access
+      if (wallObj.user_id && wallObj.user_id.rating) {
+        wallObj.rating = wallObj.user_id.rating;
+      }
+      
+      return wallObj;
+    });
     
-    res.json(wallsWithBase64);
+    res.json(wallsWithUrls);
   } catch (error) {
     console.error('Get walls error:', error);
     res.status(500).json({ error: error.message });
@@ -181,35 +137,7 @@ router.get('/:id', async (req, res) => {
       wallObj.rating = wallObj.user_id.rating;
     }
     
-    // Convert file paths to base64 for frontend
-    if (wallObj.logo_url && wallObj.logo_url.startsWith('/uploads/') && !isBase64Image(wallObj.logo_url)) {
-      try {
-        wallObj.logo_url = await convertFilePathToBase64(wallObj.logo_url);
-      } catch (error) {
-        console.error('Error converting logo to base64:', error);
-        // Keep original path if conversion fails
-      }
-    }
-    
-    if (wallObj.hero_media_url && wallObj.hero_media_url.startsWith('/uploads/') && !isBase64Image(wallObj.hero_media_url)) {
-      try {
-        wallObj.hero_media_url = await convertFilePathToBase64(wallObj.hero_media_url);
-      } catch (error) {
-        console.error('Error converting hero media to base64:', error);
-        // Keep original path if conversion fails
-      }
-    }
-    
-    // Convert showreel file path to base64 if it's an upload type
-    if (wallObj.showreel_url && wallObj.showreel_type === 'upload' && 
-        wallObj.showreel_url.startsWith('/uploads/') && !isBase64Video(wallObj.showreel_url)) {
-      try {
-        wallObj.showreel_url = await convertFilePathToBase64(wallObj.showreel_url);
-      } catch (error) {
-        console.error('Error converting showreel to base64:', error);
-        // Keep original path if conversion fails
-      }
-    }
+    // Cloudinary URLs are already ready to use, no conversion needed
     
     res.json(wallObj);
   } catch (error) {
@@ -232,86 +160,86 @@ router.post('/', protect, async (req, res) => {
     // Prepare wall data
     const wallData = { ...req.body };
     
-    // Handle logo_url: store base64 directly, convert file paths to base64
+    // Handle logo_url: upload base64 to Cloudinary, keep existing Cloudinary URLs
     if (wallData.logo_url) {
       try {
         if (isBase64Image(wallData.logo_url)) {
-          // Base64 data received - validate size before storing (10MB max for images)
+          // Base64 data received - validate size before uploading (10MB max for images)
           const validation = validateBase64ImageSize(wallData.logo_url, 10);
           if (!validation.valid) {
             return res.status(400).json({ error: `Logo image: ${validation.error}` });
           }
-        // Clean the base64 string before storing
-        wallData.logo_url = cleanBase64String(wallData.logo_url);
-      } else if (wallData.logo_url.startsWith('/uploads/')) {
-        // File path received - convert to base64 before storing
-        wallData.logo_url = await convertFilePathToBase64(wallData.logo_url);
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(wallData.logo_url, 'logos', 'logo', 'image');
+          wallData.logo_url = uploadResult.secure_url;
+        } else if (isCloudinaryUrl(wallData.logo_url) || isEmbedUrl(wallData.logo_url)) {
+          // Already a Cloudinary URL or embed URL, keep as-is
+        } else {
+          // Invalid format
+          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
         }
-        // If it's neither base64 nor file path, keep it as-is (could be URL)
       } catch (error) {
         console.error('Error processing logo_url:', error);
         return res.status(400).json({ error: `Logo image error: ${error.message}` });
       }
     }
     
-    // Handle hero_media_url: store base64 directly, convert file paths to base64
+    // Handle hero_media_url: upload base64 to Cloudinary, keep existing Cloudinary URLs
     if (wallData.hero_media_url) {
       try {
         if (isBase64Image(wallData.hero_media_url)) {
-          // Base64 data received - validate size before storing (10MB max for images)
+          // Base64 image received - validate size before uploading (10MB max for images)
           const validation = validateBase64ImageSize(wallData.hero_media_url, 10);
           if (!validation.valid) {
             return res.status(400).json({ error: `Hero image: ${validation.error}` });
           }
-        // Clean the base64 string before storing
-        wallData.hero_media_url = cleanBase64String(wallData.hero_media_url);
-        // Set hero_media_type to 'image' if not specified
-        if (!wallData.hero_media_type) {
-          wallData.hero_media_type = 'image';
-        }
-      } else if (wallData.hero_media_url.startsWith('/uploads/')) {
-        // File path received - convert to base64 before storing
-        wallData.hero_media_url = await convertFilePathToBase64(wallData.hero_media_url);
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(wallData.hero_media_url, 'hero', 'hero', 'image');
+          wallData.hero_media_url = uploadResult.secure_url;
           // Set hero_media_type to 'image' if not specified
           if (!wallData.hero_media_type) {
             wallData.hero_media_type = 'image';
           }
-        } else {
-          // If it's not base64 or file path, set hero_media_type to 'image' if not specified
-          if (!wallData.hero_media_type && wallData.hero_media_url) {
-            wallData.hero_media_type = 'image';
+        } else if (isBase64Video(wallData.hero_media_url)) {
+          // Base64 video received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(wallData.hero_media_url, 'hero', 'hero', 'video');
+          wallData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'video' if not specified
+          if (!wallData.hero_media_type) {
+            wallData.hero_media_type = 'video';
           }
+        } else if (isCloudinaryUrl(wallData.hero_media_url) || isEmbedUrl(wallData.hero_media_url)) {
+          // Already a Cloudinary URL or embed URL, keep as-is
+          if (!wallData.hero_media_type) {
+            // Try to determine type from URL
+            wallData.hero_media_type = isEmbedUrl(wallData.hero_media_url) ? 'video' : 'image';
+          }
+        } else {
+          // Invalid format
+          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
         }
       } catch (error) {
         console.error('Error processing hero_media_url:', error);
-        return res.status(400).json({ error: `Hero image error: ${error.message}` });
+        return res.status(400).json({ error: `Hero media error: ${error.message}` });
       }
     }
     
-    // Handle showreel_url: convert file paths to base64, keep embed URLs as-is
+    // Handle showreel_url: upload base64 to Cloudinary, keep embed URLs as-is
     if (wallData.showreel_url && wallData.showreel_type === 'upload') {
-      if (isBase64Video(wallData.showreel_url)) {
-        // Base64 video data received - clean and store directly
-        wallData.showreel_url = cleanBase64String(wallData.showreel_url);
-      } else if (wallData.showreel_url.startsWith('/uploads/')) {
-        // File path received - convert to base64 before storing
-        try {
-          wallData.showreel_url = await convertFilePathToBase64(wallData.showreel_url);
-        } catch (error) {
-          console.error('Error converting showreel file to base64:', error);
-          return res.status(400).json({ error: 'Failed to convert showreel video: ' + error.message });
+      try {
+        if (isBase64Video(wallData.showreel_url)) {
+          // Base64 video data received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(wallData.showreel_url, 'showreels', 'showreel', 'video');
+          wallData.showreel_url = uploadResult.secure_url;
+        } else if (isCloudinaryUrl(wallData.showreel_url)) {
+          // Already a Cloudinary URL, keep as-is
+        } else {
+          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
         }
+      } catch (error) {
+        console.error('Error processing showreel_url:', error);
+        return res.status(400).json({ error: `Showreel error: ${error.message}` });
       }
-    }
-    
-    // Check total document size (MongoDB has 16MB document limit)
-    const wallDataString = JSON.stringify(wallData);
-    const wallDataSizeMB = Buffer.byteLength(wallDataString, 'utf8') / (1024 * 1024);
-    
-    if (wallDataSizeMB > 15) { // Leave some margin below 16MB limit
-      return res.status(400).json({ 
-        error: `Wall data is too large (${wallDataSizeMB.toFixed(2)}MB). Maximum allowed: 15MB. Please reduce image sizes.` 
-      });
     }
     
     let wall;
@@ -355,7 +283,6 @@ router.post('/', protect, async (req, res) => {
     const populatedWall = await Wall.findById(wall._id)
       .populate('user_id', 'name email rating location associations');
     
-    // Images should already be base64 at this point, but convert any remaining file paths as safety net
     const wallObj = populatedWall.toObject();
     
     // Add rating directly from populated user_id (profile) for easier frontend access
@@ -364,32 +291,6 @@ router.post('/', protect, async (req, res) => {
     } else if (profile.rating) {
       // Fallback to profile rating if populate didn't work
       wallObj.rating = profile.rating;
-    }
-    
-    if (wallObj.logo_url && wallObj.logo_url.startsWith('/uploads/') && !isBase64Image(wallObj.logo_url)) {
-      try {
-        wallObj.logo_url = await convertFilePathToBase64(wallObj.logo_url);
-      } catch (error) {
-        console.error('Error converting logo to base64:', error);
-      }
-    }
-    
-    if (wallObj.hero_media_url && wallObj.hero_media_url.startsWith('/uploads/') && !isBase64Image(wallObj.hero_media_url)) {
-      try {
-        wallObj.hero_media_url = await convertFilePathToBase64(wallObj.hero_media_url);
-      } catch (error) {
-        console.error('Error converting hero media to base64:', error);
-      }
-    }
-    
-    // Convert showreel file path to base64 if it's an upload type
-    if (wallObj.showreel_url && wallObj.showreel_type === 'upload' && 
-        wallObj.showreel_url.startsWith('/uploads/') && !isBase64Video(wallObj.showreel_url)) {
-      try {
-        wallObj.showreel_url = await convertFilePathToBase64(wallObj.showreel_url);
-      } catch (error) {
-        console.error('Error converting showreel to base64:', error);
-      }
     }
     
     res.status(201).json(wallObj);
@@ -426,57 +327,135 @@ router.put('/:id', protect, async (req, res) => {
     // Prepare update data
     const updateData = { ...req.body };
     
-    // If base64 images are provided, store them directly (don't convert to files)
-    // If logo_url is base64, keep it as base64
-    if (updateData.logo_url && isBase64Image(updateData.logo_url)) {
-      // Base64 data received - validate size before storing (10MB max for images)
-      const validation = validateBase64ImageSize(updateData.logo_url, 10);
-      if (!validation.valid) {
-        return res.status(400).json({ error: `Logo image: ${validation.error}` });
-      }
-    } else if (updateData.logo_url && updateData.logo_url.startsWith('/uploads/')) {
-      // If it's a file path, convert it to base64 for frontend
-      try {
-        updateData.logo_url = await convertFilePathToBase64(updateData.logo_url);
-      } catch (error) {
-        console.error('Error converting logo file to base64:', error);
-        // Continue with file path if conversion fails
-      }
-    }
+    // Track old URLs to delete from Cloudinary if replaced
+    const oldUrls = {
+      logo_url: wall.logo_url,
+      hero_media_url: wall.hero_media_url,
+      showreel_url: wall.showreel_url
+    };
     
-    // If hero_media_url is base64, keep it as base64
-    if (updateData.hero_media_url && isBase64Image(updateData.hero_media_url)) {
-      // Base64 data received - validate size before storing (10MB max for images)
-      const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
-      if (!validation.valid) {
-        return res.status(400).json({ error: `Hero image: ${validation.error}` });
-      }
-      // Set hero_media_type to 'image' if not specified
-      if (!updateData.hero_media_type) {
-        updateData.hero_media_type = 'image';
-      }
-    } else if (updateData.hero_media_url && updateData.hero_media_url.startsWith('/uploads/')) {
-      // If it's a file path, convert it to base64 for frontend
+    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
       try {
-        updateData.hero_media_url = await convertFilePathToBase64(updateData.hero_media_url);
-      } catch (error) {
-        console.error('Error converting hero file to base64:', error);
-        // Continue with file path if conversion fails
-      }
-    }
-    
-    // Handle showreel_url: convert file paths to base64, keep embed URLs as-is
-    if (updateData.showreel_url && updateData.showreel_type === 'upload') {
-      if (isBase64Video(updateData.showreel_url)) {
-        // Base64 video data received - store directly
-      } else if (updateData.showreel_url.startsWith('/uploads/')) {
-        // File path received - convert to base64 before storing
-        try {
-          updateData.showreel_url = await convertFilePathToBase64(updateData.showreel_url);
-        } catch (error) {
-          console.error('Error converting showreel file to base64:', error);
-          return res.status(400).json({ error: 'Failed to convert showreel video: ' + error.message });
+        if (isBase64Image(updateData.logo_url)) {
+          // Base64 data received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.logo_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Logo image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
+          updateData.logo_url = uploadResult.secure_url;
+          
+          // Delete old logo from Cloudinary if it exists
+          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'image');
+              } catch (error) {
+                console.error('Error deleting old logo from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
+          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
         }
+      } catch (error) {
+        console.error('Error processing logo_url:', error);
+        return res.status(400).json({ error: `Logo image error: ${error.message}` });
+      }
+    }
+    
+    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
+      try {
+        if (isBase64Image(updateData.hero_media_url)) {
+          // Base64 image received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Hero image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'image' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'image';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (isBase64Video(updateData.hero_media_url)) {
+          // Base64 video received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'video' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'video';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
+          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing hero_media_url:', error);
+        return res.status(400).json({ error: `Hero media error: ${error.message}` });
+      }
+    }
+    
+    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
+        updateData.showreel_url !== oldUrls.showreel_url) {
+      try {
+        if (isBase64Video(updateData.showreel_url)) {
+          // Base64 video data received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
+          updateData.showreel_url = uploadResult.secure_url;
+          
+          // Delete old showreel from Cloudinary if it exists
+          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'video');
+              } catch (error) {
+                console.error('Error deleting old showreel from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
+          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
+        }
+      } catch (error) {
+        console.error('Error processing showreel_url:', error);
+        return res.status(400).json({ error: `Showreel error: ${error.message}` });
       }
     }
     
@@ -495,33 +474,6 @@ router.put('/:id', protect, async (req, res) => {
     } else if (profile.rating) {
       // Fallback to profile rating if populate didn't work
       wallObj.rating = profile.rating;
-    }
-    
-    // Convert any remaining file paths to base64 for frontend
-    if (wallObj.logo_url && wallObj.logo_url.startsWith('/uploads/') && !isBase64Image(wallObj.logo_url)) {
-      try {
-        wallObj.logo_url = await convertFilePathToBase64(wallObj.logo_url);
-      } catch (error) {
-        console.error('Error converting logo to base64:', error);
-      }
-    }
-    
-    if (wallObj.hero_media_url && wallObj.hero_media_url.startsWith('/uploads/') && !isBase64Image(wallObj.hero_media_url)) {
-      try {
-        wallObj.hero_media_url = await convertFilePathToBase64(wallObj.hero_media_url);
-      } catch (error) {
-        console.error('Error converting hero media to base64:', error);
-      }
-    }
-    
-    // Convert showreel file path to base64 if it's an upload type
-    if (wallObj.showreel_url && wallObj.showreel_type === 'upload' && 
-        wallObj.showreel_url.startsWith('/uploads/') && !isBase64Video(wallObj.showreel_url)) {
-      try {
-        wallObj.showreel_url = await convertFilePathToBase64(wallObj.showreel_url);
-      } catch (error) {
-        console.error('Error converting showreel to base64:', error);
-      }
     }
     
     res.json(wallObj);
@@ -549,6 +501,37 @@ router.delete('/:id', protect, async (req, res) => {
     // Check if user owns the wall
     if (wall.user_id.toString() !== profile._id.toString()) {
       return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Delete associated files from Cloudinary before deleting the wall
+    try {
+      // Delete logo if it exists in Cloudinary
+      if (wall.logo_url && isCloudinaryUrl(wall.logo_url)) {
+        const logoPublicId = extractPublicIdFromUrl(wall.logo_url);
+        if (logoPublicId) {
+          await deleteFromCloudinary(logoPublicId, 'image');
+        }
+      }
+      
+      // Delete hero media if it exists in Cloudinary
+      if (wall.hero_media_url && isCloudinaryUrl(wall.hero_media_url)) {
+        const heroPublicId = extractPublicIdFromUrl(wall.hero_media_url);
+        if (heroPublicId) {
+          const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+          await deleteFromCloudinary(heroPublicId, resourceType);
+        }
+      }
+      
+      // Delete showreel if it exists in Cloudinary
+      if (wall.showreel_url && wall.showreel_type === 'upload' && isCloudinaryUrl(wall.showreel_url)) {
+        const showreelPublicId = extractPublicIdFromUrl(wall.showreel_url);
+        if (showreelPublicId) {
+          await deleteFromCloudinary(showreelPublicId, 'video');
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting files from Cloudinary:', error);
+      // Continue with wall deletion even if Cloudinary deletion fails
     }
     
     await Wall.findByIdAndDelete(req.params.id);

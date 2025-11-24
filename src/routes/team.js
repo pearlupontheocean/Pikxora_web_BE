@@ -3,7 +3,7 @@ import TeamMember from '../models/TeamMember.js';
 import Wall from '../models/Wall.js';
 import Profile from '../models/Profile.js';
 import { protect } from '../middleware/auth.js';
-import { isBase64Image, convertFilePathToBase64 } from '../utils/imageUtils.js';
+import { isBase64Image, isCloudinaryUrl, uploadBase64ToCloudinary, deleteFromCloudinary, extractPublicIdFromUrl } from '../utils/imageUtils.js';
 
 const router = express.Router();
 
@@ -15,25 +15,12 @@ router.get('/wall/:wallId', async (req, res) => {
     const teamMembers = await TeamMember.find({ wall_id: req.params.wallId })
       .sort({ order_index: 1, createdAt: 1 });
     
-    // Convert file paths to base64 for frontend
-    const membersWithBase64 = await Promise.all(
-      teamMembers.map(async (member) => {
-        const memberObj = member.toObject();
-        
-        // Convert avatar_url if it's a file path
-        if (memberObj.avatar_url && memberObj.avatar_url.startsWith('/uploads/') && !isBase64Image(memberObj.avatar_url)) {
-          try {
-            memberObj.avatar_url = await convertFilePathToBase64(memberObj.avatar_url);
-          } catch (error) {
-            console.error('Error converting avatar to base64:', error);
-          }
-        }
-        
-        return memberObj;
-      })
-    );
+    // Cloudinary URLs are ready to use, no conversion needed
+    const membersWithUrls = teamMembers.map((member) => {
+      return member.toObject();
+    });
     
-    res.json(membersWithBase64);
+    res.json(membersWithUrls);
   } catch (error) {
     console.error('Get team members error:', error);
     res.status(500).json({ error: error.message });
@@ -60,20 +47,22 @@ router.post('/', protect, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
-    const teamMember = new TeamMember(req.body);
-    await teamMember.save();
-    
-    // Convert avatar_url if it's a file path
-    const memberObj = teamMember.toObject();
-    if (memberObj.avatar_url && memberObj.avatar_url.startsWith('/uploads/') && !isBase64Image(memberObj.avatar_url)) {
+    // Handle avatar_url: upload base64 to Cloudinary if needed
+    const memberData = { ...req.body };
+    if (memberData.avatar_url && isBase64Image(memberData.avatar_url)) {
       try {
-        memberObj.avatar_url = await convertFilePathToBase64(memberObj.avatar_url);
+        const uploadResult = await uploadBase64ToCloudinary(memberData.avatar_url, 'avatars', 'avatar', 'image');
+        memberData.avatar_url = uploadResult.secure_url;
       } catch (error) {
-        console.error('Error converting avatar to base64:', error);
+        console.error('Error uploading avatar to Cloudinary:', error);
+        return res.status(400).json({ error: `Avatar upload error: ${error.message}` });
       }
     }
     
-    res.status(201).json(memberObj);
+    const teamMember = new TeamMember(memberData);
+    await teamMember.save();
+    
+    res.status(201).json(teamMember.toObject());
   } catch (error) {
     console.error('Create team member error:', error);
     res.status(500).json({ error: error.message });
@@ -105,20 +94,41 @@ router.put('/:id', protect, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
     
-    Object.assign(teamMember, req.body);
-    await teamMember.save();
+    // Handle avatar_url: upload base64 to Cloudinary if needed, delete old if replaced
+    const updateData = { ...req.body };
+    const oldAvatarUrl = teamMember.avatar_url;
     
-    // Convert avatar_url if it's a file path
-    const memberObj = teamMember.toObject();
-    if (memberObj.avatar_url && memberObj.avatar_url.startsWith('/uploads/') && !isBase64Image(memberObj.avatar_url)) {
-      try {
-        memberObj.avatar_url = await convertFilePathToBase64(memberObj.avatar_url);
-      } catch (error) {
-        console.error('Error converting avatar to base64:', error);
+    if (updateData.avatar_url && updateData.avatar_url !== oldAvatarUrl) {
+      if (isBase64Image(updateData.avatar_url)) {
+        try {
+          const uploadResult = await uploadBase64ToCloudinary(updateData.avatar_url, 'avatars', 'avatar', 'image');
+          updateData.avatar_url = uploadResult.secure_url;
+          
+          // Delete old avatar from Cloudinary if it exists
+          if (oldAvatarUrl && isCloudinaryUrl(oldAvatarUrl)) {
+            const oldPublicId = extractPublicIdFromUrl(oldAvatarUrl);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'image');
+              } catch (error) {
+                console.error('Error deleting old avatar from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error uploading avatar to Cloudinary:', error);
+          return res.status(400).json({ error: `Avatar upload error: ${error.message}` });
+        }
+      } else if (!isCloudinaryUrl(updateData.avatar_url)) {
+        return res.status(400).json({ error: 'Avatar URL must be a base64 image or Cloudinary URL' });
       }
     }
     
-    res.json(memberObj);
+    Object.assign(teamMember, updateData);
+    await teamMember.save();
+    
+    res.json(teamMember.toObject());
   } catch (error) {
     console.error('Update team member error:', error);
     res.status(500).json({ error: error.message });
@@ -148,6 +158,19 @@ router.delete('/:id', protect, async (req, res) => {
     
     if (wall.user_id.toString() !== profile._id.toString()) {
       return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Delete avatar from Cloudinary if it exists
+    if (teamMember.avatar_url && isCloudinaryUrl(teamMember.avatar_url)) {
+      try {
+        const avatarPublicId = extractPublicIdFromUrl(teamMember.avatar_url);
+        if (avatarPublicId) {
+          await deleteFromCloudinary(avatarPublicId, 'image');
+        }
+      } catch (error) {
+        console.error('Error deleting avatar from Cloudinary:', error);
+        // Continue with deletion even if Cloudinary deletion fails
+      }
     }
     
     await TeamMember.findByIdAndDelete(req.params.id);

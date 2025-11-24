@@ -1,20 +1,17 @@
-import fs from 'fs';
-import { promises as fsPromises } from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import cloudinary, { requireCloudinary } from '../config/cloudinary.js';
 
 /**
- * Saves a base64 image to the filesystem
- * @param {string} base64Data - Base64 encoded image data (with or without data URI prefix)
- * @param {string} folder - Folder name within uploads directory (e.g., 'logos', 'hero')
+ * Uploads a base64 image/video to Cloudinary
+ * @param {string} base64Data - Base64 encoded image/video data (with or without data URI prefix)
+ * @param {string} folder - Folder name in Cloudinary (e.g., 'logos', 'hero', 'wall-assets')
  * @param {string} prefix - Filename prefix (e.g., 'logo', 'hero')
- * @returns {Promise<string>} - URL path to the saved file
+ * @param {string} resourceType - 'image' or 'video' (default: 'auto' - Cloudinary will detect)
+ * @returns {Promise<{secure_url: string, public_id: string}>} - Cloudinary secure URL and public ID
  */
-export async function saveBase64Image(base64Data, folder = 'wall-assets', prefix = 'image') {
+export async function uploadBase64ToCloudinary(base64Data, folder = 'wall-assets', prefix = 'image', resourceType = 'auto') {
+  // Check if Cloudinary is configured before attempting upload
+  requireCloudinary();
+  
   try {
     // Remove data URI prefix if present (e.g., "data:image/png;base64,")
     const base64String = base64Data.includes(',') 
@@ -25,38 +22,74 @@ export async function saveBase64Image(base64Data, folder = 'wall-assets', prefix
     const mimeMatch = base64Data.match(/data:([^;]+);base64/);
     const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
     
-    // Determine file extension from MIME type
-    const extensionMap = {
-      'image/jpeg': '.jpg',
-      'image/jpg': '.jpg',
-      'image/png': '.png',
-      'image/gif': '.gif',
-      'image/webp': '.webp'
-    };
-    const extension = extensionMap[mimeType] || '.png';
-    
-    // Convert base64 to buffer
-    const buffer = Buffer.from(base64String, 'base64');
-    
-    // Create upload directory if it doesn't exist
-    const uploadPath = path.join(__dirname, '../../uploads', folder);
-    if (!fs.existsSync(uploadPath)) {
-      fs.mkdirSync(uploadPath, { recursive: true });
+    // Determine resource type from MIME type if not specified
+    if (resourceType === 'auto') {
+      if (mimeType.startsWith('image/')) {
+        resourceType = 'image';
+      } else if (mimeType.startsWith('video/')) {
+        resourceType = 'video';
+      } else {
+        resourceType = 'image'; // Default to image
+      }
     }
     
     // Generate unique filename
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const filename = `${prefix}-${uniqueSuffix}${extension}`;
-    const filepath = path.join(uploadPath, filename);
+    const publicId = `pikxora/${folder}/${prefix}-${uniqueSuffix}`;
     
-    // Write file to disk
-    fs.writeFileSync(filepath, buffer);
+    // Upload to Cloudinary
+    const uploadResult = await cloudinary.uploader.upload(
+      `data:${mimeType};base64,${base64String}`,
+      {
+        public_id: publicId,
+        resource_type: resourceType,
+        folder: `pikxora/${folder}`,
+        overwrite: false,
+        transformation: resourceType === 'image' ? [
+          { quality: 'auto' },
+          { fetch_format: 'auto' }
+        ] : undefined,
+      }
+    );
     
-    // Return the URL path
-    return `/uploads/${folder}/${filename}`;
+    return {
+      secure_url: uploadResult.secure_url,
+      public_id: uploadResult.public_id,
+      url: uploadResult.secure_url, // Alias for backward compatibility
+      resource_type: uploadResult.resource_type
+    };
   } catch (error) {
-    console.error('Error saving base64 image:', error);
-    throw new Error(`Failed to save image: ${error.message}`);
+    console.error('Error uploading to Cloudinary:', error);
+    throw new Error(`Failed to upload to Cloudinary: ${error.message}`);
+  }
+}
+
+/**
+ * Deletes a file from Cloudinary using public_id
+ * @param {string} publicId - Cloudinary public_id
+ * @param {string} resourceType - 'image' or 'video' (default: 'auto')
+ * @returns {Promise<Object>} - Cloudinary deletion result
+ */
+export async function deleteFromCloudinary(publicId, resourceType = 'auto') {
+  // Check if Cloudinary is configured before attempting deletion
+  requireCloudinary();
+  
+  try {
+    if (!publicId) {
+      throw new Error('Public ID is required');
+    }
+    
+    // If public_id includes the full path, extract just the public_id
+    // Cloudinary public_id format: pikxora/folder/filename
+    const result = await cloudinary.uploader.destroy(publicId, {
+      resource_type: resourceType === 'auto' ? undefined : resourceType,
+      invalidate: true // Invalidate CDN cache
+    });
+    
+    return result;
+  } catch (error) {
+    console.error('Error deleting from Cloudinary:', error);
+    throw new Error(`Failed to delete from Cloudinary: ${error.message}`);
   }
 }
 
@@ -71,34 +104,78 @@ export function isBase64Image(str) {
 }
 
 /**
- * Cleans and normalizes a base64 data URI string
- * @param {string} base64Data - Base64 encoded data with data URI prefix
- * @returns {string} - Cleaned base64 data URI
+ * Checks if a string is a base64 video data URI
+ * @param {string} str - String to check
+ * @returns {boolean}
  */
-export function cleanBase64String(base64Data) {
+export function isBase64Video(str) {
+  if (!str || typeof str !== 'string') return false;
+  return str.startsWith('data:video/') && str.includes('base64,');
+}
+
+/**
+ * Checks if a string is a Cloudinary URL
+ * @param {string} str - String to check
+ * @returns {boolean}
+ */
+export function isCloudinaryUrl(str) {
+  if (!str || typeof str !== 'string') return false;
+  return str.includes('cloudinary.com') || str.includes('res.cloudinary.com');
+}
+
+/**
+ * Checks if a string is an embed URL (YouTube, Vimeo, etc.)
+ * @param {string} str - String to check
+ * @returns {boolean}
+ */
+export function isEmbedUrl(str) {
+  if (!str || typeof str !== 'string') return false;
+  return str.includes('youtube.com') || 
+         str.includes('youtu.be') || 
+         str.includes('vimeo.com') ||
+         str.startsWith('http') && (str.includes('/embed/') || str.includes('player.vimeo.com'));
+}
+
+/**
+ * Extracts public_id from a Cloudinary URL
+ * @param {string} cloudinaryUrl - Full Cloudinary URL
+ * @returns {string|null} - Public ID or null if not a Cloudinary URL
+ */
+export function extractPublicIdFromUrl(cloudinaryUrl) {
+  if (!isCloudinaryUrl(cloudinaryUrl)) {
+    return null;
+  }
+  
   try {
-    if (!base64Data || typeof base64Data !== 'string') {
-      return base64Data;
+    // Cloudinary URL format: https://res.cloudinary.com/{cloud_name}/{resource_type}/upload/{transformations}/{public_id}.{format}
+    const urlParts = cloudinaryUrl.split('/upload/');
+    if (urlParts.length < 2) {
+      return null;
     }
     
-    // If it's a data URI, preserve the prefix
-    if (base64Data.includes(',')) {
-      const parts = base64Data.split(',');
-      if (parts.length >= 2) {
-        const prefix = parts[0];
-        const data = parts.slice(1).join(','); // In case there are commas in the data (shouldn't happen, but be safe)
-        // Clean the base64 data part (remove whitespace)
-        const cleanedData = data.trim().replace(/\s/g, '');
-        return `${prefix},${cleanedData}`;
+    const afterUpload = urlParts[1];
+    // Remove transformations if present (format: v{number}/ or {width}x{height}/)
+    const parts = afterUpload.split('/');
+    const lastPart = parts[parts.length - 1];
+    
+    // Remove file extension
+    const publicId = lastPart.replace(/\.[^.]+$/, '');
+    
+    // Reconstruct full public_id with folder path if transformations were present
+    if (parts.length > 1) {
+      // Check if there are folder parts before the filename
+      const folderParts = parts.slice(0, -1);
+      // Filter out transformation parts (they're usually just numbers or have 'x' in them)
+      const actualFolders = folderParts.filter(part => !/^v\d+$/.test(part) && !/^\d+x\d+$/.test(part));
+      if (actualFolders.length > 0) {
+        return actualFolders.join('/') + '/' + publicId;
       }
     }
     
-    // If it's just base64 data, clean it
-    return base64Data.trim().replace(/\s/g, '');
+    return publicId;
   } catch (error) {
-    console.error('Error cleaning base64 string:', error);
-    // Return original if cleaning fails
-    return base64Data;
+    console.error('Error extracting public_id from URL:', error);
+    return null;
   }
 }
 
@@ -165,68 +242,11 @@ export function validateBase64ImageSize(base64Data, maxSizeMB = 50) {
 }
 
 /**
- * Converts a file path to base64 data URL
- * @param {string} filePath - File path starting with /uploads/
- * @returns {Promise<string>} - Base64 data URL
+ * Legacy function name for backward compatibility
+ * Now uploads to Cloudinary instead of saving locally
+ * @deprecated Use uploadBase64ToCloudinary instead
  */
-export async function convertFilePathToBase64(filePath) {
-  try {
-    const fullPath = path.join(__dirname, '../../', filePath);
-    
-    // Check if file exists (async check)
-    try {
-      await fsPromises.access(fullPath);
-    } catch {
-      throw new Error(`File not found: ${filePath}`);
-    }
-    
-    // Read file as buffer (async)
-    const buffer = await fsPromises.readFile(fullPath);
-    
-    // Determine MIME type from file extension
-    const ext = path.extname(filePath).toLowerCase();
-    const mimeMap = {
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.png': 'image/png',
-      '.gif': 'image/gif',
-      '.webp': 'image/webp',
-      '.mp4': 'video/mp4',
-      '.webm': 'video/webm',
-      '.mov': 'video/quicktime',
-      '.avi': 'video/x-msvideo'
-    };
-    const mimeType = mimeMap[ext] || (ext.startsWith('.') ? `application/${ext.slice(1)}` : 'application/octet-stream');
-    
-    // Convert to base64
-    const base64String = buffer.toString('base64');
-    return `data:${mimeType};base64,${base64String}`;
-  } catch (error) {
-    console.error('Error converting file to base64:', error);
-    throw error;
-  }
+export async function saveBase64Image(base64Data, folder = 'wall-assets', prefix = 'image') {
+  const result = await uploadBase64ToCloudinary(base64Data, folder, prefix, 'image');
+  return result.secure_url;
 }
-
-/**
- * Checks if a string is a base64 video data URI
- * @param {string} str - String to check
- * @returns {boolean}
- */
-export function isBase64Video(str) {
-  if (!str || typeof str !== 'string') return false;
-  return str.startsWith('data:video/') && str.includes('base64,');
-}
-
-/**
- * Checks if a string is an embed URL (YouTube, Vimeo, etc.)
- * @param {string} str - String to check
- * @returns {boolean}
- */
-export function isEmbedUrl(str) {
-  if (!str || typeof str !== 'string') return false;
-  return str.includes('youtube.com') || 
-         str.includes('youtu.be') || 
-         str.includes('vimeo.com') ||
-         str.startsWith('http') && (str.includes('/embed/') || str.includes('player.vimeo.com'));
-}
-
