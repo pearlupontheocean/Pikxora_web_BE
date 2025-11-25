@@ -3,6 +3,7 @@ import cors from 'cors';
 import compression from 'compression';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 import connectDB from './config/database.js';
 import authRoutes from './routes/auth.js';
 import profileRoutes from './routes/profiles.js';
@@ -10,18 +11,20 @@ import wallRoutes from './routes/walls.js';
 import projectRoutes from './routes/projects.js';
 import teamRoutes from './routes/team.js';
 import uploadRoutes from './routes/upload.js';
-import dotenv from 'dotenv';
+// import dotenv from 'dotenv';
 
-dotenv.config();
+// dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load .env from the project root (Pikxora_web_BE directory)
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
 
 // Connect to MongoDB
 connectDB();
-
 // Performance Middleware
 // Compression middleware - compress all responses
 app.use(compression({
@@ -108,8 +111,7 @@ app.use(express.urlencoded({
   parameterLimit: 50000 // Increase parameter limit
 }));
 
-// Serve uploaded files
-app.use('/uploads', express.static(path.join(__dirname, '../../uploads')));
+// File serving removed - using Cloudinary for file storage
 
 // Routes
 app.use('/api/auth', authRoutes);
