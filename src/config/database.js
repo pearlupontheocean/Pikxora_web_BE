@@ -7,7 +7,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from the project root (Pikxora_web_BE directory)
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config();
+
 
 const connectDB = async () => {
   try {
@@ -23,7 +24,8 @@ const connectDB = async () => {
     };
 
     await mongoose.connect(process.env.MONGODB_URI, options);
-    console.log('✅ MongoDB Connected');
+    console.log('✅ MongoDB Connected successfully');
+    console.log('📍 Connection type:', process.env.MONGODB_URI?.includes('localhost') || process.env.MONGODB_URI?.includes('127.0.0.1') ? 'LOCALHOST' : 'REMOTE SERVER');
     
     // Optimize queries
     mongoose.set('strictQuery', false);

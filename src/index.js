@@ -11,6 +11,12 @@ import wallRoutes from './routes/walls.js';
 import projectRoutes from './routes/projects.js';
 import teamRoutes from './routes/team.js';
 import uploadRoutes from './routes/upload.js';
+import movieRoutes from './routes/movies.js';
+import jobRoutes from './routes/jobs.js';
+import bidRoutes from './routes/bids.js';
+import contractRoutes from './routes/contracts.js';
+import deliverableRoutes from './routes/deliverables.js';
+import reviewRoutes from './routes/reviews.js';
 // import dotenv from 'dotenv';
 
 // dotenv.config();
@@ -120,6 +126,12 @@ app.use('/api/walls', wallRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/team', teamRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/movies', movieRoutes);
+app.use('/api/jobs', jobRoutes);
+app.use('/api/bids', bidRoutes);
+app.use('/api/contracts', contractRoutes);
+app.use('/api/deliverables', deliverableRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 // Export app for Vercel serverless functions
 export default app;
