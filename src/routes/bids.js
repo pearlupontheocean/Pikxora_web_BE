@@ -12,6 +12,8 @@ const router = express.Router();
 // @access  Private (artist, studio)
 router.post('/', protect, async (req, res) => {
   try {
+    console.log('🔍 POST /api/bids - Request body:', JSON.stringify(req.body, null, 2));
+
     const {
       job_id,
       amount_total,
@@ -60,7 +62,7 @@ router.post('/', protect, async (req, res) => {
       currency: currency || 'INR',
       breakdown,
       estimated_duration_days,
-      start_available_from,
+      start_available_from: start_available_from ? new Date(start_available_from) : undefined,
       notes,
       included_services,
       status: 'pending'
@@ -69,6 +71,7 @@ router.post('/', protect, async (req, res) => {
     await bid.save();
 
     await bid.populate('bidder_id', 'email');
+
 
     res.status(201).json({
       message: 'Bid submitted successfully',
