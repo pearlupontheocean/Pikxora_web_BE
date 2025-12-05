@@ -1,5 +1,6 @@
 import express from 'express';
 import Profile from '../models/Profile.js';
+import User from '../models/User.js'; // Import User model
 import { protect, adminOnly } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -46,6 +47,51 @@ router.get('/pending', protect, adminOnly, async (req, res) => {
   } catch (error) {
     console.error('Get pending profiles error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// @route   GET /api/profiles/user/:userId
+// @desc    Get user and their profile details by user ID
+// @access  Public
+router.get('/user/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select('-password'); // Exclude password
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const profile = await Profile.findOne({ user_id: req.params.userId });
+
+    // Combine user and profile data into the CurrentUser structure
+    const userDetails = {
+      user: {
+        id: user._id,
+        email: user.email,
+        roles: user.roles,
+      },
+      profile: profile ? {
+        _id: profile._id,
+        name: profile.name,
+        bio: profile.bio,
+        verification_status: profile.verification_status,
+        rating: profile.rating,
+        location: profile.location,
+        avatar_url: profile.avatar_url,
+        tagline: profile.tagline,
+        brand_colors: profile.brand_colors,
+        social_links: profile.social_links,
+        skills: profile.skills,
+        wall_id: profile.wall_id, // Ensure wall_id is included if it exists in Profile model
+      } : null,
+    };
+
+    res.json(userDetails);
+  } catch (error) {
+    console.error('Get user profile by ID error:', error);
+    if (error.name === 'CastError') {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    res.status(500).json({ error: 'Server error' });
   }
 });
 

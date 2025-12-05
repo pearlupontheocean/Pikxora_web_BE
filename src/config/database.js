@@ -7,11 +7,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load .env from the project root (Pikxora_web_BE directory)
-dotenv.config();
-
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 const connectDB = async () => {
   try {
+
     const options = {
       // Connection pool settings for better performance
       maxPoolSize: 10, // Maintain up to 10 socket connections
