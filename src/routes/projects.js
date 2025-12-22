@@ -269,4 +269,37 @@ router.delete('/:id', protect, async (req, res) => {
   }
 });
 
+// @route   GET /api/projects/user/:userId
+// @desc    Get all projects for a specific user
+// @access  Public
+router.get('/user/:userId', async (req, res) => {
+  try {
+    // Find the profile associated with the userId
+    const profile = await Profile.findOne({ user_id: req.params.userId }).lean();
+
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found for this user.' });
+    }
+
+    // Find the wall associated with the profile
+    const wall = await Wall.findOne({ user_id: profile._id }).lean();
+
+    if (!wall) {
+      return res.status(404).json({ error: 'Wall not found for this user.' });
+    }
+
+    const projects = await Project.find({ wall_id: wall._id })
+      .sort({ order_index: 1 })
+      .lean();
+
+    res.json(projects);
+  } catch (error) {
+    console.error('Get projects by user ID error:', error);
+    if (error.name === 'CastError') {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
