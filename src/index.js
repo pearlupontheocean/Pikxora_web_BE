@@ -4,6 +4,8 @@ import compression from 'compression';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import http from 'http'; // Import http module
+import { Server } from 'socket.io'; // Import Socket.IO Server
 import connectDB from './config/database.js';
 import authRoutes from './routes/auth.js';
 import profileRoutes from './routes/profiles.js';
@@ -17,27 +19,52 @@ import bidRoutes from './routes/bids.js';
 import contractRoutes from './routes/contracts.js';
 import deliverableRoutes from './routes/deliverables.js';
 import reviewRoutes from './routes/reviews.js';
-// import dotenv from 'dotenv';
-
-// dotenv.config();
+import associationRoutes from './routes/associations.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env from the project root (Pikxora_web_BE directory)
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
+const server = http.createServer(app); // Create HTTP server
+export const io = new Server(server, { // Initialize Socket.IO and export it
+  cors: {
+    origin: [
+      'http://localhost:8080',
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'http://127.0.0.1:8080',
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:5173',
+      'https://pikxora-web-fe.vercel.app'
+    ],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    credentials: true,
+  },
+});
+
+io.on('connection', (socket) => {
+  console.log('Socket connected:', socket.id);
+
+  socket.on('register', (userId) => {
+    socket.join(userId); // Join a room named after the user's ID
+    console.log(`User ${userId} registered for real-time updates`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Socket disconnected:', socket.id);
+  });
+});
 
 // Connect to MongoDB
 connectDB();
+
 // Performance Middleware
-// Compression middleware - compress all responses
 app.use(compression({
-  level: 6, // Compression level (0-9, 6 is a good balance)
-  threshold: 1024, // Only compress responses larger than 1KB
+  level: 6,
+  threshold: 1024,
   filter: (req, res) => {
-    // Don't compress if client doesn't support it
     if (req.headers['x-no-compression']) {
       return false;
     }
@@ -56,17 +83,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// CORS Middleware - Handle preflight requests properly
-// Note: When credentials: true, you cannot use origin: '*'
-// Must specify exact origins or use a function
+// CORS Middleware
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, curl)
     if (!origin) {
       return callback(null, true);
     }
     
-    // List of allowed origins
     const allowedOrigins = [
       'http://localhost:8080',
       'http://localhost:3000',
@@ -74,21 +97,16 @@ const corsOptions = {
       'http://127.0.0.1:8080',
       'http://127.0.0.1:3000',
       'http://127.0.0.1:5173',
-      // Add your production frontend URL here
       'https://pikxora-web-fe.vercel.app'
     ];
     
-    // Check if origin is in allowed list or if we're in development
     if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
       callback(null, true);
     } else {
-      // For production, check environment variable for additional origins
       const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
       if (envOrigins.indexOf(origin) !== -1) {
         callback(null, true);
       } else {
-        // For now, allow all origins to debug CORS issues
-        // TODO: Restrict this in production
         callback(null, true);
       }
     }
@@ -99,25 +117,21 @@ const corsOptions = {
   exposedHeaders: ['Content-Type', 'Authorization'],
   preflightContinue: false,
   optionsSuccessStatus: 204,
-  maxAge: 86400 // Cache preflight requests for 24 hours
+  maxAge: 86400
 };
 
 app.use(cors(corsOptions));
 
 // Body parsing middleware
-// Increase payload size limit to handle base64 images (50MB file = ~67MB in base64)
 app.use(express.json({ 
   limit: '70mb',
-  // Use faster JSON parser
   strict: false
 }));
 app.use(express.urlencoded({ 
   extended: true, 
   limit: '70mb',
-  parameterLimit: 50000 // Increase parameter limit
+  parameterLimit: 50000
 }));
-
-// File serving removed - using Cloudinary for file storage
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -132,16 +146,24 @@ app.use('/api/bids', bidRoutes);
 app.use('/api/contracts', contractRoutes);
 app.use('/api/deliverables', deliverableRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/associations', associationRoutes); // Pass router directly
+
+// Set io instance on app for route handlers to access
+app.set('io', io);
 
 // Export app for Vercel serverless functions
 export default app;
 
-// Only start server if not in Vercel environment
 const PORT = process.env.PORT || 5001;
 
-// Vercel provides PORT automatically, but we check if we're in a serverless environment
 if (process.env.VERCEL !== '1') {
-  app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
   });
+} else {
+  // For Vercel, export a handler for serverless function
+  // This might require a different approach for real-time, e.g., external WebSocket service
+  // For now, Socket.IO functionality will be limited in Vercel's serverless environment.
+  // Consider a dedicated Vercel deployment with a custom server if full WebSocket support is needed.
+  console.log("Serverless environment detected. Socket.IO will not run as a persistent server.");
 }
