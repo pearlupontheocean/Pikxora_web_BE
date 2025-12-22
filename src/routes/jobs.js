@@ -58,8 +58,8 @@ router.post('/', protect, async (req, res) => {
     }
 
     // Validate assignment mode
-    if (assignment_mode === 'direct' && !assigned_to) {
-      return res.status(400).json({ error: 'assigned_to is required for direct assignment' });
+    if (assignment_mode === 'direct' && (!assigned_to || (Array.isArray(assigned_to) && assigned_to.length === 0))) {
+      return res.status(400).json({ error: 'At least one assigned_to user is required for direct assignment' });
     }
 
     if (assignment_mode === 'open' && !bid_deadline) {
@@ -79,7 +79,7 @@ router.post('/', protect, async (req, res) => {
       description,
       movie_id,
       assignment_mode,
-      assigned_to: assignment_mode === 'direct' ? assigned_to : null,
+      assigned_to: assignment_mode === 'direct' ? (Array.isArray(assigned_to) ? assigned_to : [assigned_to]) : [],
       payment_type,
       currency: currency || 'INR',
       min_budget,
@@ -198,7 +198,7 @@ router.get('/', protect, async (req, res) => {
 
     // Jobs assigned to user (direct assignment)
     if (assigned_to_me === 'true') {
-      query.assigned_to = req.user.id;
+      query.assigned_to = { $in: [req.user.id] }; // Match if user ID is in the array
       query.assignment_mode = 'direct';
     }
 
@@ -211,20 +211,49 @@ router.get('/', protect, async (req, res) => {
       Object.keys(query).forEach(key => delete query[key]);
 
       // Users can see jobs they created, jobs assigned to them, or open bidding jobs
-      query.$or = [
-        { created_by: req.user.id }, // Jobs they created
-        { assigned_to: req.user.id }, // Jobs assigned to them
-        ...(created_by_me !== 'true' && assigned_to_me !== 'true'
-          ? [{ status: 'open', assignment_mode: 'open' }] // Open bidding jobs
-          : [])
-      ];
+      // IMPORTANT: Direct assignment jobs are ONLY visible to the creator and assigned users
+      
+      // If filtering by assigned_to_me, ONLY show jobs assigned to the user (not jobs they created)
+      if (assigned_to_me === 'true') {
+        query.assigned_to = { $in: [req.user.id] }; // Only jobs assigned to them
+        query.assignment_mode = 'direct'; // Must be direct assignment
+      } else {
+        // Normal visibility: jobs they created, jobs assigned to them, or open bidding jobs
+        const visibilityConditions = [
+          { created_by: req.user.id }, // Jobs they created
+          { assigned_to: { $in: [req.user.id] } } // Jobs assigned to them (check if user ID is in array)
+        ];
+
+        // Only add open bidding jobs if not filtering by created_by_me
+        // AND if not filtering by assignment_mode='direct' (direct jobs should only show if user is assigned)
+        if (created_by_me !== 'true' && baseQuery.assignment_mode !== 'direct') {
+          visibilityConditions.push({ status: 'open', assignment_mode: 'open' }); // Open bidding jobs
+        }
+
+        query.$or = visibilityConditions;
+      }
 
       // Apply any additional filters (like budget, skills, etc.) to all visible jobs
-      if (baseQuery.status && baseQuery.status !== 'open') {
-        query.status = baseQuery.status;
-      }
-      if (baseQuery.assignment_mode) {
-        query.assignment_mode = baseQuery.assignment_mode;
+      // Skip these if we're filtering by assigned_to_me (already set above)
+      if (assigned_to_me !== 'true') {
+        if (baseQuery.status && baseQuery.status !== 'open') {
+          query.status = baseQuery.status;
+        }
+        // Only apply assignment_mode filter if it's 'open' - direct assignment is already handled by assigned_to check
+        if (baseQuery.assignment_mode && baseQuery.assignment_mode === 'open') {
+          query.assignment_mode = baseQuery.assignment_mode;
+        }
+        // If filtering by 'direct', we need to ensure only direct assignment jobs are shown
+        // AND that the user is assigned to them (already handled by $or condition with assigned_to check)
+        if (baseQuery.assignment_mode === 'direct') {
+          query.assignment_mode = 'direct';
+          // The $or condition already ensures only jobs assigned to the user are shown
+        }
+      } else {
+        // When filtering by assigned_to_me, we can still apply status filter
+        if (baseQuery.status) {
+          query.status = baseQuery.status;
+        }
       }
       if (baseQuery.payment_type) {
         query.payment_type = baseQuery.payment_type;
@@ -272,11 +301,16 @@ router.get('/:id', protect, async (req, res) => {
     }
 
     // Check access permissions
+    // Check if user is in assigned_to array
+    const isAssignedToUser = Array.isArray(job.assigned_to)
+      ? job.assigned_to.some(user => user._id.toString() === req.user.id)
+      : job.assigned_to?._id?.toString() === req.user.id;
+
     const hasAccess =
       req.user.roles.includes('admin') ||
       job.created_by._id.toString() === req.user.id ||
       (job.assignment_mode === 'open' && job.status === 'open') ||
-      job.assigned_to?._id.toString() === req.user.id ||
+      isAssignedToUser ||
       (job.status === 'awarded' && req.user.roles.some(role => ['artist', 'studio'].includes(role)) && (await Bid.exists({ job_id: job._id, bidder_id: req.user.id, status: 'accepted' })));
 
     if (!hasAccess) {
@@ -334,7 +368,8 @@ router.put('/:id', protect, async (req, res) => {
       }
       updates.assignment_mode = req.body.assignment_mode;
       if (req.body.assignment_mode === 'direct') {
-        updates.assigned_to = req.body.assigned_to;
+        // Ensure assigned_to is an array
+        updates.assigned_to = Array.isArray(req.body.assigned_to) ? req.body.assigned_to : [req.body.assigned_to];
       }
     }
 
@@ -436,9 +471,24 @@ router.put('/:id', protect, async (req, res) => {
         console.log(`  📝 ${field}: ${JSON.stringify(processedValue)}`);
 
         // Handle empty strings for ObjectId fields
-        if ((field === 'movie_id' || field === 'assigned_to') && processedValue === '') {
+        if (field === 'movie_id' && processedValue === '') {
           processedValue = undefined;
           console.log(`    → Converted empty string to undefined`);
+        }
+        // Handle assigned_to array
+        else if (field === 'assigned_to') {
+          if (Array.isArray(processedValue)) {
+            // Filter out empty strings and ensure valid ObjectIds
+            processedValue = processedValue.filter(id => id && id !== '');
+            console.log(`    → Processed assigned_to array: ${processedValue.length} users`);
+          } else if (processedValue === '') {
+            processedValue = [];
+            console.log(`    → Converted empty string to empty array`);
+          } else if (processedValue) {
+            // Convert single value to array for backward compatibility
+            processedValue = [processedValue];
+            console.log(`    → Converted single value to array`);
+          }
         }
         // Handle date fields
         else if ((field === 'bid_deadline' || field === 'expected_start_date' || field === 'final_delivery_date') && processedValue) {
@@ -471,7 +521,7 @@ router.put('/:id', protect, async (req, res) => {
 
     // If changing from direct to open assignment, clear assigned_to
     if (req.body.assignment_mode === 'open' && job.assignment_mode === 'direct') {
-      job.assigned_to = undefined;
+      job.assigned_to = [];
     }
 
     // Validate status transitions

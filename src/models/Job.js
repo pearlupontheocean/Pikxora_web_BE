@@ -23,10 +23,10 @@ const jobSchema = new mongoose.Schema({
     enum: ['direct', 'open'],
     required: true
   },
-  assigned_to: {
+  assigned_to: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
-  }, // Only used for direct assignment
+  }], // Only used for direct assignment - can be multiple users
 
   // Budget & Payment
   payment_type: {
