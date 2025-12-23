@@ -231,8 +231,13 @@ router.post('/', protect, async (req, res) => {
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' });
     }
-    
-    
+
+    // Check if the user already has a wall
+    const existingWall = await Wall.findOne({ user_id: profile._id });
+    if (existingWall) {
+      return res.status(400).json({ error: 'User can only have one wall.' });
+    }
+
     // Prepare wall data
     const wallData = { ...req.body };
     
