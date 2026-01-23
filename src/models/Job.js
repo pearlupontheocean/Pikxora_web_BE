@@ -17,11 +17,25 @@ const jobSchema = new mongoose.Schema({
     ref: 'Movie'
   },
 
-  // Assignment Mode
+  // Job Type
+  job_type: {
+    type: String,
+    enum: ['job', 'freelance'],
+    default: 'job',
+    required: true
+  },
+
+  // Package per Year (for Studio Jobs)
+  package_per_year: {
+    type: Number,
+    min: 0
+  },
+
+  // Assignment Mode (for Freelance Jobs)
   assignment_mode: {
     type: String,
     enum: ['direct', 'open'],
-    required: true
+    required: false // Optional - only required for freelance jobs
   },
   assigned_to: [{
     type: mongoose.Schema.Types.ObjectId,
@@ -31,8 +45,16 @@ const jobSchema = new mongoose.Schema({
   // Budget & Payment
   payment_type: {
     type: String,
-    enum: ['fixed', 'per_shot', 'per_frame'],
-    required: true
+    enum: ['fixed', 'per_shot', 'per_frame', 'hourly'],
+    required: false // Only required for freelance jobs
+  },
+  hourly_rate: {
+    type: Number,
+    min: 0
+  },
+  estimated_hours: {
+    type: Number,
+    min: 0
   },
   currency: {
     type: String,
@@ -107,14 +129,14 @@ const jobSchema = new mongoose.Schema({
   // Dates & Deadlines
   bid_deadline: {
     type: Date,
-    required: true
+    required: false // Required only for open bidding jobs
   },
   expected_start_date: {
     type: Date
   },
   final_delivery_date: {
     type: Date,
-    required: true
+    required: false // Only required for freelance jobs
   },
 
   // Status & Workflow
@@ -145,7 +167,9 @@ const jobSchema = new mongoose.Schema({
 // Indexes for efficient querying
 jobSchema.index({ created_by: 1 }); // Jobs by creator
 jobSchema.index({ status: 1 }); // Filter by status
+jobSchema.index({ job_type: 1 }); // Filter by job type
 jobSchema.index({ assignment_mode: 1 }); // Direct vs open jobs
+jobSchema.index({ job_type: 1, status: 1 }); // Job type and status combined
 jobSchema.index({ bid_deadline: 1 }); // Jobs by deadline
 jobSchema.index({ final_delivery_date: 1 }); // Jobs by delivery date
 jobSchema.index({ movie_id: 1 }); // Jobs by movie

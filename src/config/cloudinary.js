@@ -84,6 +84,13 @@ export const requireCloudinary = () => {
   }
 };
 
+// Document MIME types
+const documentMimeTypes = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+];
+
 // Create Cloudinary storage for multer (only if configured)
 export const storage = isConfigured ? new CloudinaryStorage({
   cloudinary: cloudinary,
@@ -92,16 +99,22 @@ export const storage = isConfigured ? new CloudinaryStorage({
     
     // Determine resource type based on file mimetype
     let resourceType = 'auto'; // Cloudinary will auto-detect
+    let allowedFormats = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm', 'mov'];
+    
     if (file.mimetype.startsWith('image/')) {
       resourceType = 'image';
     } else if (file.mimetype.startsWith('video/')) {
       resourceType = 'video';
+    } else if (documentMimeTypes.includes(file.mimetype)) {
+      // Documents need 'raw' resource type in Cloudinary
+      resourceType = 'raw';
+      allowedFormats = ['pdf', 'doc', 'docx'];
     }
     
     return {
       folder: `pikxora/${folder}`,
       resource_type: resourceType,
-      allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm', 'mov'],
+      allowed_formats: allowedFormats,
       transformation: resourceType === 'image' ? [
         { quality: 'auto' },
         { fetch_format: 'auto' }

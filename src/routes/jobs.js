@@ -32,12 +32,16 @@ router.post('/', protect, async (req, res) => {
       title,
       description,
       movie_id,
+      job_type,
+      package_per_year,
       assignment_mode,
       assigned_to,
       payment_type,
       currency,
       min_budget,
       max_budget,
+      hourly_rate,
+      estimated_hours,
       total_shots,
       total_frames,
       resolution,
@@ -57,13 +61,37 @@ router.post('/', protect, async (req, res) => {
       return res.status(403).json({ error: 'Only studios and admins can create jobs' });
     }
 
-    // Validate assignment mode
-    if (assignment_mode === 'direct' && (!assigned_to || (Array.isArray(assigned_to) && assigned_to.length === 0))) {
-      return res.status(400).json({ error: 'At least one assigned_to user is required for direct assignment' });
-    }
-
-    if (assignment_mode === 'open' && !bid_deadline) {
-      return res.status(400).json({ error: 'bid_deadline is required for open bidding' });
+    // Validate job type specific requirements
+    let finalAssignmentMode = assignment_mode;
+    let finalAssignedTo = assigned_to;
+    
+    if (job_type === 'job') {
+      // Studio jobs: require package_per_year only, no budget/payment, no VFX specs, no schedule
+      if (!package_per_year) {
+        return res.status(400).json({ error: 'Package per year is required for studio jobs' });
+      }
+      // Studio jobs are always open for bidding (no assignment_mode needed)
+      finalAssignmentMode = 'open';
+      finalAssignedTo = [];
+    } else if (job_type === 'freelance') {
+      // Freelance jobs: require assignment_mode, payment_type, final_delivery_date
+      if (!assignment_mode) {
+        return res.status(400).json({ error: 'Assignment mode is required for freelance jobs' });
+      }
+      if (!payment_type) {
+        return res.status(400).json({ error: 'Payment type is required for freelance jobs' });
+      }
+      if (!final_delivery_date) {
+        return res.status(400).json({ error: 'Final delivery date is required for freelance jobs' });
+      }
+      finalAssignmentMode = assignment_mode;
+      if (assignment_mode === 'direct' && (!assigned_to || (Array.isArray(assigned_to) && assigned_to.length === 0))) {
+        return res.status(400).json({ error: 'At least one assigned_to user is required for direct assignment' });
+      }
+      if (assignment_mode === 'open' && !bid_deadline) {
+        return res.status(400).json({ error: 'Bid deadline is required for open bidding' });
+      }
+      finalAssignedTo = assignment_mode === 'direct' ? (Array.isArray(assigned_to) ? assigned_to : [assigned_to]) : [];
     }
 
     // Validate movie exists if provided
@@ -78,24 +106,28 @@ router.post('/', protect, async (req, res) => {
       title,
       description,
       movie_id,
-      assignment_mode,
-      assigned_to: assignment_mode === 'direct' ? (Array.isArray(assigned_to) ? assigned_to : [assigned_to]) : [],
-      payment_type,
+      job_type: job_type || 'job',
+      package_per_year: job_type === 'job' ? package_per_year : undefined,
+      assignment_mode: finalAssignmentMode,
+      assigned_to: finalAssignedTo,
+      payment_type: job_type === 'job' ? undefined : payment_type,
       currency: currency || 'INR',
-      min_budget,
-      max_budget,
-      total_shots,
-      total_frames,
-      resolution,
-      frame_rate,
-      shot_breakdown,
-      required_skills,
-      software_preferences,
-      deliverables,
-      bid_deadline: bid_deadline ? new Date(bid_deadline) : undefined,
-      expected_start_date: expected_start_date ? new Date(expected_start_date) : undefined,
-      final_delivery_date: final_delivery_date ? new Date(final_delivery_date) : undefined,
-      notes_for_bidders,
+      min_budget: job_type === 'job' ? undefined : min_budget,
+      max_budget: job_type === 'job' ? undefined : max_budget,
+      hourly_rate: job_type === 'job' ? undefined : hourly_rate,
+      estimated_hours: job_type === 'job' ? undefined : estimated_hours,
+      total_shots: job_type === 'job' ? undefined : total_shots,
+      total_frames: job_type === 'job' ? undefined : total_frames,
+      resolution: job_type === 'job' ? undefined : resolution,
+      frame_rate: job_type === 'job' ? undefined : frame_rate,
+      shot_breakdown: job_type === 'job' ? undefined : shot_breakdown,
+      required_skills: required_skills || [],
+      software_preferences: software_preferences || [],
+      deliverables: deliverables || [],
+      bid_deadline: job_type === 'job' ? undefined : (bid_deadline ? new Date(bid_deadline) : undefined),
+      expected_start_date: job_type === 'job' ? undefined : (expected_start_date ? new Date(expected_start_date) : undefined),
+      final_delivery_date: job_type === 'job' ? undefined : (final_delivery_date ? new Date(final_delivery_date) : undefined),
+      notes_for_bidders: job_type === 'job' ? undefined : notes_for_bidders,
       status: 'draft',
       created_by: req.user.id
     });
@@ -118,7 +150,12 @@ router.post('/', protect, async (req, res) => {
     if (error.name === 'ValidationError') {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: 'Server error' });
+    // Return more detailed error for debugging
+    res.status(500).json({ 
+      error: 'Server error',
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
@@ -130,6 +167,7 @@ router.get('/', protect, async (req, res) => {
 
     const {
       status,
+      job_type,
       assignment_mode,
       payment_type,
       min_budget,
@@ -143,6 +181,18 @@ router.get('/', protect, async (req, res) => {
 
 
     let query = {};
+    let jobTypeFilter = null; // Store job_type filter separately to avoid $or conflicts
+
+    // Filter by job_type
+    // Note: Old jobs may not have job_type field - treat them as 'freelance'
+    if (job_type) {
+      if (job_type === 'freelance') {
+        // Include jobs with job_type='freelance' OR jobs without job_type field (legacy)
+        jobTypeFilter = { $or: [{ job_type: 'freelance' }, { job_type: { $exists: false } }] };
+      } else {
+        query.job_type = job_type;
+      }
+    }
 
     // Filter by status
     if (status) {
@@ -217,42 +267,62 @@ router.get('/', protect, async (req, res) => {
       if (assigned_to_me === 'true') {
         query.assigned_to = { $in: [req.user.id] }; // Only jobs assigned to them
         query.assignment_mode = 'direct'; // Must be direct assignment
+        // Apply status and job_type filters
+        if (baseQuery.status) {
+          query.status = baseQuery.status;
+        }
+        if (baseQuery.job_type) {
+          query.job_type = baseQuery.job_type;
+        }
+      } else if (created_by_me === 'true') {
+        // If filtering by created_by_me, show ALL jobs created by user (regardless of status)
+        query.created_by = req.user.id;
+        // Apply status filter if provided (user wants to filter their own jobs by status)
+        if (baseQuery.status) {
+          query.status = baseQuery.status;
+        }
+        // Apply job_type filter if provided
+        if (baseQuery.job_type) {
+          query.job_type = baseQuery.job_type;
+        }
       } else {
-        // Normal visibility: jobs they created, jobs assigned to them, or open bidding jobs
+        // Normal visibility: jobs they created, jobs assigned to them, or open jobs
         const visibilityConditions = [
-          { created_by: req.user.id }, // Jobs they created
+          { created_by: req.user.id }, // Jobs they created (regardless of status)
           { assigned_to: { $in: [req.user.id] } } // Jobs assigned to them (check if user ID is in array)
         ];
 
-        // Only add open bidding jobs if not filtering by created_by_me
-        // AND if not filtering by assignment_mode='direct' (direct jobs should only show if user is assigned)
-        if (created_by_me !== 'true' && baseQuery.assignment_mode !== 'direct') {
-          visibilityConditions.push({ status: 'open', assignment_mode: 'open' }); // Open bidding jobs
+        // Add open jobs visibility
+        // For freelance jobs: must have assignment_mode='open' and status='open'
+        // For studio jobs (job_type='job'): just need status='open'
+        if (baseQuery.assignment_mode !== 'direct') {
+          // Open freelance jobs (bidding)
+          visibilityConditions.push({ status: 'open', assignment_mode: 'open', job_type: 'freelance' });
+          visibilityConditions.push({ status: 'open', assignment_mode: 'open', job_type: { $exists: false } }); // Legacy jobs
+          // Open studio jobs (applications) - just need status='open' and job_type='job'
+          visibilityConditions.push({ status: 'open', job_type: 'job' });
         }
 
         query.$or = visibilityConditions;
-      }
-
-      // Apply any additional filters (like budget, skills, etc.) to all visible jobs
-      // Skip these if we're filtering by assigned_to_me (already set above)
-      if (assigned_to_me !== 'true') {
-        if (baseQuery.status && baseQuery.status !== 'open') {
-          query.status = baseQuery.status;
-        }
-        // Only apply assignment_mode filter if it's 'open' - direct assignment is already handled by assigned_to check
+        
+        // When we have $or conditions, we need to be careful about applying top-level filters
+        // because MongoDB requires ALL conditions to match, which would exclude user's own jobs
+        // that don't match the filter (e.g., draft jobs when filtering by status='open')
+        
+        // For assignment_mode: Don't apply top-level filter when we have $or with user's own jobs
+        // because user's draft jobs might not have assignment_mode set (studio jobs don't have assignment_mode)
+        // Instead, the assignment_mode='open' is already in the $or condition for open bidding jobs
         if (baseQuery.assignment_mode && baseQuery.assignment_mode === 'open') {
-          query.assignment_mode = baseQuery.assignment_mode;
-        }
-        // If filtering by 'direct', we need to ensure only direct assignment jobs are shown
-        // AND that the user is assigned to them (already handled by $or condition with assigned_to check)
-        if (baseQuery.assignment_mode === 'direct') {
+          // Don't apply top-level filter - it's already in the $or condition
+          // This allows user's own jobs (which may not have assignment_mode='open') to show
+        } else if (baseQuery.assignment_mode === 'direct') {
+          // For direct assignment, we can apply the filter because assigned jobs are already in $or
           query.assignment_mode = 'direct';
-          // The $or condition already ensures only jobs assigned to the user are shown
         }
-      } else {
-        // When filtering by assigned_to_me, we can still apply status filter
-        if (baseQuery.status) {
-          query.status = baseQuery.status;
+        
+        // Apply job_type filter (this is safe because it applies to all conditions in $or)
+        if (baseQuery.job_type) {
+          query.job_type = baseQuery.job_type;
         }
       }
       if (baseQuery.payment_type) {
@@ -270,8 +340,19 @@ router.get('/', protect, async (req, res) => {
       }
     }
 
+    // Combine jobTypeFilter with query using $and if needed
+    let finalQuery = query;
+    if (jobTypeFilter) {
+      if (query.$or) {
+        // If we already have $or in query, wrap both in $and
+        finalQuery = { $and: [jobTypeFilter, query] };
+      } else {
+        // Otherwise, just merge the $or from jobTypeFilter
+        finalQuery = { ...query, ...jobTypeFilter };
+      }
+    }
 
-    const jobs = await Job.find(query)
+    const jobs = await Job.find(finalQuery)
       .populate('movie_id', 'title production_year genre')
       .populate('created_by', 'email')
       .populate('assigned_to', 'email')
@@ -285,6 +366,133 @@ router.get('/', protect, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+// @route   GET /api/jobs/public
+// @desc    Get public jobs (open bidding jobs only)
+// @access  Public
+router.get('/public', async (req, res) => {
+  try {
+    const {
+      status,
+      job_type,
+      payment_type,
+      min_budget,
+      max_budget,
+      skills,
+      software,
+      movie_id
+    } = req.query;
+
+    let query = {
+      status: 'open'
+    };
+
+    // Filter by job_type
+    // Note: Old jobs may not have job_type field - treat them as 'freelance'
+    if (job_type) {
+      if (job_type === 'freelance') {
+        // Include jobs with job_type='freelance' OR jobs without job_type field (legacy)
+        // These also need assignment_mode='open' for bidding
+        query.$and = query.$and || [];
+        query.$and.push({ $or: [{ job_type: 'freelance' }, { job_type: { $exists: false } }] });
+        query.assignment_mode = 'open';
+      } else if (job_type === 'job') {
+        // Studio jobs - just need status='open' (already set above)
+        query.job_type = 'job';
+      }
+    } else {
+      // No job_type filter - show all open jobs
+      // Freelance jobs need assignment_mode='open', studio jobs just need status='open'
+      query.$or = [
+        { job_type: 'job' }, // Studio jobs
+        { assignment_mode: 'open', job_type: 'freelance' }, // Freelance jobs
+        { assignment_mode: 'open', job_type: { $exists: false } } // Legacy jobs
+      ];
+    }
+
+    // Filter by payment type
+    if (payment_type) {
+      query.payment_type = payment_type;
+    }
+
+    // Budget range filtering
+    if (min_budget || max_budget) {
+      if (min_budget && max_budget) {
+        query.$or = [
+          { $and: [{ min_budget: { $lte: parseInt(max_budget) } }, { max_budget: { $gte: parseInt(min_budget) } }] },
+          { $and: [{ min_budget: { $gte: parseInt(min_budget) } }, { min_budget: { $lte: parseInt(max_budget) } }] }
+        ];
+      } else if (min_budget) {
+        query.max_budget = { $gte: parseInt(min_budget) };
+      } else if (max_budget) {
+        query.min_budget = { $lte: parseInt(max_budget) };
+      }
+    }
+
+    // Skills filtering
+    if (skills) {
+      const skillsArray = skills.split(',').map(s => s.trim());
+      query.required_skills = { $in: skillsArray };
+    }
+
+    // Software filtering
+    if (software) {
+      const softwareArray = software.split(',').map(s => s.trim());
+      query.software_preferences = { $in: softwareArray };
+    }
+
+    // Movie filtering
+    if (movie_id) {
+      query.movie_id = movie_id;
+    }
+
+    const jobs = await Job.find(query)
+      .populate('movie_id', 'title production_year genre')
+      .populate('created_by', 'email')
+      .populate('assigned_to', 'email')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json(jobs);
+  } catch (error) {
+    console.error('❌ Get public jobs error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// @route   GET /api/jobs/:id/public
+// @desc    Get public job by ID (open bidding jobs only)
+// @access  Public
+router.get('/:id/public', async (req, res) => {
+  try {
+    const job = await Job.findById(req.params.id)
+      .populate('movie_id', 'title production_year genre poster_url')
+      .populate('created_by', 'email')
+      .populate('assigned_to', 'email')
+      .lean();
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    // Only allow access to open bidding jobs
+    if (job.status !== 'open' || job.assignment_mode !== 'open') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Increment view count
+    await Job.findByIdAndUpdate(req.params.id, { $inc: { view_count: 1 } });
+
+    res.json(job);
+  } catch (error) {
+    console.error('Get public job error:', error);
+    if (error.name === 'CastError') {
+      return res.status(400).json({ error: 'Invalid job ID' });
+    }
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // @route   GET /api/jobs/:id
 // @desc    Get job by ID
 // @access  Private
@@ -412,8 +620,10 @@ router.put('/:id/publish', protect, async (req, res) => {
     }
 
     // Validate required fields for publishing
-    if (!job.bid_deadline && job.assignment_mode === 'open') {
-      return res.status(400).json({ error: 'Bid deadline is required for open jobs' });
+    // Only freelance jobs with open bidding require bid_deadline
+    // Studio jobs (job_type === 'job') don't need bid_deadline
+    if (job.job_type !== 'job' && !job.bid_deadline && job.assignment_mode === 'open') {
+      return res.status(400).json({ error: 'Bid deadline is required for open bidding freelance jobs' });
     }
 
     job.status = 'open';
@@ -540,12 +750,15 @@ router.put('/:id', protect, async (req, res) => {
       if (newStatus === 'open' && currentStatus === 'draft') {
         // When publishing from draft to open, ensure required fields are set
         // Check the NEW values being sent, not the old values in the database
+        const newJobType = req.body.job_type || job.job_type;
         const newAssignmentMode = req.body.assignment_mode || job.assignment_mode;
         const newBidDeadline = req.body.bid_deadline || job.bid_deadline;
 
-        if (newAssignmentMode === 'open' && !newBidDeadline) {
+        // Only freelance jobs with open bidding require bid_deadline
+        // Studio jobs (job_type === 'job') don't need bid_deadline
+        if (newJobType !== 'job' && newAssignmentMode === 'open' && !newBidDeadline) {
           return res.status(400).json({
-            error: 'Bid deadline is required when publishing open jobs'
+            error: 'Bid deadline is required when publishing open freelance jobs'
           });
         }
       }
