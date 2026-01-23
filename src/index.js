@@ -20,6 +20,7 @@ import contractRoutes from './routes/contracts.js';
 import deliverableRoutes from './routes/deliverables.js';
 import reviewRoutes from './routes/reviews.js';
 import associationRoutes from './routes/associations.js';
+import jobApplicationRoutes from './routes/jobApplications.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -147,6 +148,7 @@ app.use('/api/contracts', contractRoutes);
 app.use('/api/deliverables', deliverableRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/associations', associationRoutes); // Pass router directly
+app.use('/api/job-applications', jobApplicationRoutes);
 
 // Set io instance on app for route handlers to access
 app.set('io', io);
