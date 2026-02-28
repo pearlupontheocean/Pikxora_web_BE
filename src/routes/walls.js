@@ -540,186 +540,23 @@ router.put('/:id', protect, async (req, res) => {
       }
     }
     
-    Object.assign(wall, updateData);
-    await wall.save();
-    
-    // Populate before returning
-    const populatedWall = await Wall.findById(wall._id)
-      .populate('user_id', 'name email rating location associations');
-    
-    const wallObj = populatedWall.toObject();
-    
-    // Add rating directly from populated user_id (profile) for easier frontend access
-    if (wallObj.user_id && wallObj.user_id.rating) {
-      wallObj.rating = wallObj.user_id.rating;
-    } else if (profile.rating) {
-      // Fallback to profile rating if populate didn't work
-      wallObj.rating = profile.rating;
-    }
-    
-    res.status(201).json(wallObj);
-  } catch (error) {
-    console.error('Create wall error:', error);
-    const errorMessage = error.message || 'Failed to create wall';
-    res.status(500).json({ 
-      error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// @route   PUT /api/walls/:id
-// @desc    Update a wall
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
-  try {
-    const profile = await Profile.findOne({ user_id: req.user.id });
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
-    
-    const wall = await Wall.findById(req.params.id);
-    if (!wall) {
-      return res.status(404).json({ error: 'Wall not found' });
-    }
-    
-    // Check if user owns the wall
-    if (wall.user_id.toString() !== profile._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    // Prepare update data
-    const updateData = { ...req.body };
-    
-    // Track old URLs to delete from Cloudinary if replaced
-    const oldUrls = {
-      logo_url: wall.logo_url,
-      hero_media_url: wall.hero_media_url,
-      showreel_url: wall.showreel_url
-    };
-    
-    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
-      try {
-        if (isBase64Image(updateData.logo_url)) {
-          // Base64 data received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.logo_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Logo image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
-          updateData.logo_url = uploadResult.secure_url;
-          
-          // Delete old logo from Cloudinary if it exists
-          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'image');
-              } catch (error) {
-                console.error('Error deleting old logo from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
             }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
           }
-        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
-          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
         }
-      } catch (error) {
-        console.error('Error processing logo_url:', error);
-        return res.status(400).json({ error: `Logo image error: ${error.message}` });
-      }
-    }
-    
-    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
-      try {
-        if (isBase64Image(updateData.hero_media_url)) {
-          // Base64 image received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Hero image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'image' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'image';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (isBase64Video(updateData.hero_media_url)) {
-          // Base64 video received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'video' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'video';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
-          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
-        }
-      } catch (error) {
-        console.error('Error processing hero_media_url:', error);
-        return res.status(400).json({ error: `Hero media error: ${error.message}` });
-      }
-    }
-    
-    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
-        updateData.showreel_url !== oldUrls.showreel_url) {
-      try {
-        if (isBase64Video(updateData.showreel_url)) {
-          // Base64 video data received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
-          updateData.showreel_url = uploadResult.secure_url;
-          
-          // Delete old showreel from Cloudinary if it exists
-          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'video');
-              } catch (error) {
-                console.error('Error deleting old showreel from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
-          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
-        }
-      } catch (error) {
-        console.error('Error processing showreel_url:', error);
-        return res.status(400).json({ error: `Showreel error: ${error.message}` });
       }
     }
     
@@ -906,186 +743,23 @@ router.put('/:id', protect, async (req, res) => {
       }
     }
     
-    Object.assign(wall, updateData);
-    await wall.save();
-    
-    // Populate before returning
-    const populatedWall = await Wall.findById(wall._id)
-      .populate('user_id', 'name email rating location associations');
-    
-    const wallObj = populatedWall.toObject();
-    
-    // Add rating directly from populated user_id (profile) for easier frontend access
-    if (wallObj.user_id && wallObj.user_id.rating) {
-      wallObj.rating = wallObj.user_id.rating;
-    } else if (profile.rating) {
-      // Fallback to profile rating if populate didn't work
-      wallObj.rating = profile.rating;
-    }
-    
-    res.status(201).json(wallObj);
-  } catch (error) {
-    console.error('Create wall error:', error);
-    const errorMessage = error.message || 'Failed to create wall';
-    res.status(500).json({ 
-      error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// @route   PUT /api/walls/:id
-// @desc    Update a wall
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
-  try {
-    const profile = await Profile.findOne({ user_id: req.user.id });
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
-    
-    const wall = await Wall.findById(req.params.id);
-    if (!wall) {
-      return res.status(404).json({ error: 'Wall not found' });
-    }
-    
-    // Check if user owns the wall
-    if (wall.user_id.toString() !== profile._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    // Prepare update data
-    const updateData = { ...req.body };
-    
-    // Track old URLs to delete from Cloudinary if replaced
-    const oldUrls = {
-      logo_url: wall.logo_url,
-      hero_media_url: wall.hero_media_url,
-      showreel_url: wall.showreel_url
-    };
-    
-    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
-      try {
-        if (isBase64Image(updateData.logo_url)) {
-          // Base64 data received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.logo_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Logo image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
-          updateData.logo_url = uploadResult.secure_url;
-          
-          // Delete old logo from Cloudinary if it exists
-          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'image');
-              } catch (error) {
-                console.error('Error deleting old logo from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
             }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
           }
-        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
-          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
         }
-      } catch (error) {
-        console.error('Error processing logo_url:', error);
-        return res.status(400).json({ error: `Logo image error: ${error.message}` });
-      }
-    }
-    
-    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
-      try {
-        if (isBase64Image(updateData.hero_media_url)) {
-          // Base64 image received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Hero image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'image' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'image';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (isBase64Video(updateData.hero_media_url)) {
-          // Base64 video received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'video' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'video';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
-          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
-        }
-      } catch (error) {
-        console.error('Error processing hero_media_url:', error);
-        return res.status(400).json({ error: `Hero media error: ${error.message}` });
-      }
-    }
-    
-    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
-        updateData.showreel_url !== oldUrls.showreel_url) {
-      try {
-        if (isBase64Video(updateData.showreel_url)) {
-          // Base64 video data received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
-          updateData.showreel_url = uploadResult.secure_url;
-          
-          // Delete old showreel from Cloudinary if it exists
-          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'video');
-              } catch (error) {
-                console.error('Error deleting old showreel from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
-          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
-        }
-      } catch (error) {
-        console.error('Error processing showreel_url:', error);
-        return res.status(400).json({ error: `Showreel error: ${error.message}` });
       }
     }
     
@@ -1272,186 +946,23 @@ router.put('/:id', protect, async (req, res) => {
       }
     }
     
-    Object.assign(wall, updateData);
-    await wall.save();
-    
-    // Populate before returning
-    const populatedWall = await Wall.findById(wall._id)
-      .populate('user_id', 'name email rating location associations');
-    
-    const wallObj = populatedWall.toObject();
-    
-    // Add rating directly from populated user_id (profile) for easier frontend access
-    if (wallObj.user_id && wallObj.user_id.rating) {
-      wallObj.rating = wallObj.user_id.rating;
-    } else if (profile.rating) {
-      // Fallback to profile rating if populate didn't work
-      wallObj.rating = profile.rating;
-    }
-    
-    res.status(201).json(wallObj);
-  } catch (error) {
-    console.error('Create wall error:', error);
-    const errorMessage = error.message || 'Failed to create wall';
-    res.status(500).json({ 
-      error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// @route   PUT /api/walls/:id
-// @desc    Update a wall
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
-  try {
-    const profile = await Profile.findOne({ user_id: req.user.id });
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
-    
-    const wall = await Wall.findById(req.params.id);
-    if (!wall) {
-      return res.status(404).json({ error: 'Wall not found' });
-    }
-    
-    // Check if user owns the wall
-    if (wall.user_id.toString() !== profile._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    // Prepare update data
-    const updateData = { ...req.body };
-    
-    // Track old URLs to delete from Cloudinary if replaced
-    const oldUrls = {
-      logo_url: wall.logo_url,
-      hero_media_url: wall.hero_media_url,
-      showreel_url: wall.showreel_url
-    };
-    
-    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
-      try {
-        if (isBase64Image(updateData.logo_url)) {
-          // Base64 data received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.logo_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Logo image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
-          updateData.logo_url = uploadResult.secure_url;
-          
-          // Delete old logo from Cloudinary if it exists
-          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'image');
-              } catch (error) {
-                console.error('Error deleting old logo from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
             }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
           }
-        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
-          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
         }
-      } catch (error) {
-        console.error('Error processing logo_url:', error);
-        return res.status(400).json({ error: `Logo image error: ${error.message}` });
-      }
-    }
-    
-    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
-      try {
-        if (isBase64Image(updateData.hero_media_url)) {
-          // Base64 image received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Hero image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'image' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'image';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (isBase64Video(updateData.hero_media_url)) {
-          // Base64 video received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'video' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'video';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
-          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
-        }
-      } catch (error) {
-        console.error('Error processing hero_media_url:', error);
-        return res.status(400).json({ error: `Hero media error: ${error.message}` });
-      }
-    }
-    
-    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
-        updateData.showreel_url !== oldUrls.showreel_url) {
-      try {
-        if (isBase64Video(updateData.showreel_url)) {
-          // Base64 video data received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
-          updateData.showreel_url = uploadResult.secure_url;
-          
-          // Delete old showreel from Cloudinary if it exists
-          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'video');
-              } catch (error) {
-                console.error('Error deleting old showreel from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
-          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
-        }
-      } catch (error) {
-        console.error('Error processing showreel_url:', error);
-        return res.status(400).json({ error: `Showreel error: ${error.message}` });
       }
     }
     
@@ -1638,186 +1149,23 @@ router.put('/:id', protect, async (req, res) => {
       }
     }
     
-    Object.assign(wall, updateData);
-    await wall.save();
-    
-    // Populate before returning
-    const populatedWall = await Wall.findById(wall._id)
-      .populate('user_id', 'name email rating location associations');
-    
-    const wallObj = populatedWall.toObject();
-    
-    // Add rating directly from populated user_id (profile) for easier frontend access
-    if (wallObj.user_id && wallObj.user_id.rating) {
-      wallObj.rating = wallObj.user_id.rating;
-    } else if (profile.rating) {
-      // Fallback to profile rating if populate didn't work
-      wallObj.rating = profile.rating;
-    }
-    
-    res.status(201).json(wallObj);
-  } catch (error) {
-    console.error('Create wall error:', error);
-    const errorMessage = error.message || 'Failed to create wall';
-    res.status(500).json({ 
-      error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// @route   PUT /api/walls/:id
-// @desc    Update a wall
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
-  try {
-    const profile = await Profile.findOne({ user_id: req.user.id });
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
-    
-    const wall = await Wall.findById(req.params.id);
-    if (!wall) {
-      return res.status(404).json({ error: 'Wall not found' });
-    }
-    
-    // Check if user owns the wall
-    if (wall.user_id.toString() !== profile._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    // Prepare update data
-    const updateData = { ...req.body };
-    
-    // Track old URLs to delete from Cloudinary if replaced
-    const oldUrls = {
-      logo_url: wall.logo_url,
-      hero_media_url: wall.hero_media_url,
-      showreel_url: wall.showreel_url
-    };
-    
-    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
-      try {
-        if (isBase64Image(updateData.logo_url)) {
-          // Base64 data received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.logo_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Logo image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
-          updateData.logo_url = uploadResult.secure_url;
-          
-          // Delete old logo from Cloudinary if it exists
-          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'image');
-              } catch (error) {
-                console.error('Error deleting old logo from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
             }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
           }
-        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
-          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
         }
-      } catch (error) {
-        console.error('Error processing logo_url:', error);
-        return res.status(400).json({ error: `Logo image error: ${error.message}` });
-      }
-    }
-    
-    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
-      try {
-        if (isBase64Image(updateData.hero_media_url)) {
-          // Base64 image received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Hero image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'image' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'image';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (isBase64Video(updateData.hero_media_url)) {
-          // Base64 video received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'video' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'video';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
-          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
-        }
-      } catch (error) {
-        console.error('Error processing hero_media_url:', error);
-        return res.status(400).json({ error: `Hero media error: ${error.message}` });
-      }
-    }
-    
-    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
-        updateData.showreel_url !== oldUrls.showreel_url) {
-      try {
-        if (isBase64Video(updateData.showreel_url)) {
-          // Base64 video data received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
-          updateData.showreel_url = uploadResult.secure_url;
-          
-          // Delete old showreel from Cloudinary if it exists
-          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'video');
-              } catch (error) {
-                console.error('Error deleting old showreel from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
-          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
-        }
-      } catch (error) {
-        console.error('Error processing showreel_url:', error);
-        return res.status(400).json({ error: `Showreel error: ${error.message}` });
       }
     }
     
@@ -2004,186 +1352,23 @@ router.put('/:id', protect, async (req, res) => {
       }
     }
     
-    Object.assign(wall, updateData);
-    await wall.save();
-    
-    // Populate before returning
-    const populatedWall = await Wall.findById(wall._id)
-      .populate('user_id', 'name email rating location associations');
-    
-    const wallObj = populatedWall.toObject();
-    
-    // Add rating directly from populated user_id (profile) for easier frontend access
-    if (wallObj.user_id && wallObj.user_id.rating) {
-      wallObj.rating = wallObj.user_id.rating;
-    } else if (profile.rating) {
-      // Fallback to profile rating if populate didn't work
-      wallObj.rating = profile.rating;
-    }
-    
-    res.status(201).json(wallObj);
-  } catch (error) {
-    console.error('Create wall error:', error);
-    const errorMessage = error.message || 'Failed to create wall';
-    res.status(500).json({ 
-      error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// @route   PUT /api/walls/:id
-// @desc    Update a wall
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
-  try {
-    const profile = await Profile.findOne({ user_id: req.user.id });
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
-    
-    const wall = await Wall.findById(req.params.id);
-    if (!wall) {
-      return res.status(404).json({ error: 'Wall not found' });
-    }
-    
-    // Check if user owns the wall
-    if (wall.user_id.toString() !== profile._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    // Prepare update data
-    const updateData = { ...req.body };
-    
-    // Track old URLs to delete from Cloudinary if replaced
-    const oldUrls = {
-      logo_url: wall.logo_url,
-      hero_media_url: wall.hero_media_url,
-      showreel_url: wall.showreel_url
-    };
-    
-    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
-      try {
-        if (isBase64Image(updateData.logo_url)) {
-          // Base64 data received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.logo_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Logo image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
-          updateData.logo_url = uploadResult.secure_url;
-          
-          // Delete old logo from Cloudinary if it exists
-          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'image');
-              } catch (error) {
-                console.error('Error deleting old logo from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
             }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
           }
-        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
-          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
         }
-      } catch (error) {
-        console.error('Error processing logo_url:', error);
-        return res.status(400).json({ error: `Logo image error: ${error.message}` });
-      }
-    }
-    
-    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
-      try {
-        if (isBase64Image(updateData.hero_media_url)) {
-          // Base64 image received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Hero image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'image' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'image';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (isBase64Video(updateData.hero_media_url)) {
-          // Base64 video received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'video' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'video';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
-          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
-        }
-      } catch (error) {
-        console.error('Error processing hero_media_url:', error);
-        return res.status(400).json({ error: `Hero media error: ${error.message}` });
-      }
-    }
-    
-    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
-        updateData.showreel_url !== oldUrls.showreel_url) {
-      try {
-        if (isBase64Video(updateData.showreel_url)) {
-          // Base64 video data received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
-          updateData.showreel_url = uploadResult.secure_url;
-          
-          // Delete old showreel from Cloudinary if it exists
-          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'video');
-              } catch (error) {
-                console.error('Error deleting old showreel from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
-          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
-        }
-      } catch (error) {
-        console.error('Error processing showreel_url:', error);
-        return res.status(400).json({ error: `Showreel error: ${error.message}` });
       }
     }
     
@@ -2370,186 +1555,23 @@ router.put('/:id', protect, async (req, res) => {
       }
     }
     
-    Object.assign(wall, updateData);
-    await wall.save();
-    
-    // Populate before returning
-    const populatedWall = await Wall.findById(wall._id)
-      .populate('user_id', 'name email rating location associations');
-    
-    const wallObj = populatedWall.toObject();
-    
-    // Add rating directly from populated user_id (profile) for easier frontend access
-    if (wallObj.user_id && wallObj.user_id.rating) {
-      wallObj.rating = wallObj.user_id.rating;
-    } else if (profile.rating) {
-      // Fallback to profile rating if populate didn't work
-      wallObj.rating = profile.rating;
-    }
-    
-    res.status(201).json(wallObj);
-  } catch (error) {
-    console.error('Create wall error:', error);
-    const errorMessage = error.message || 'Failed to create wall';
-    res.status(500).json({ 
-      error: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// @route   PUT /api/walls/:id
-// @desc    Update a wall
-// @access  Private
-router.put('/:id', protect, async (req, res) => {
-  try {
-    const profile = await Profile.findOne({ user_id: req.user.id });
-    if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
-    
-    const wall = await Wall.findById(req.params.id);
-    if (!wall) {
-      return res.status(404).json({ error: 'Wall not found' });
-    }
-    
-    // Check if user owns the wall
-    if (wall.user_id.toString() !== profile._id.toString()) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    
-    // Prepare update data
-    const updateData = { ...req.body };
-    
-    // Track old URLs to delete from Cloudinary if replaced
-    const oldUrls = {
-      logo_url: wall.logo_url,
-      hero_media_url: wall.hero_media_url,
-      showreel_url: wall.showreel_url
-    };
-    
-    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
-      try {
-        if (isBase64Image(updateData.logo_url)) {
-          // Base64 data received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.logo_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Logo image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
-          updateData.logo_url = uploadResult.secure_url;
-          
-          // Delete old logo from Cloudinary if it exists
-          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'image');
-              } catch (error) {
-                console.error('Error deleting old logo from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
             }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
           }
-        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
-          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
         }
-      } catch (error) {
-        console.error('Error processing logo_url:', error);
-        return res.status(400).json({ error: `Logo image error: ${error.message}` });
-      }
-    }
-    
-    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
-      try {
-        if (isBase64Image(updateData.hero_media_url)) {
-          // Base64 image received - validate size before uploading (10MB max for images)
-          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
-          if (!validation.valid) {
-            return res.status(400).json({ error: `Hero image: ${validation.error}` });
-          }
-          // Upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'image' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'image';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (isBase64Video(updateData.hero_media_url)) {
-          // Base64 video received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
-          updateData.hero_media_url = uploadResult.secure_url;
-          // Set hero_media_type to 'video' if not specified
-          if (!updateData.hero_media_type) {
-            updateData.hero_media_type = 'video';
-          }
-          
-          // Delete old hero media from Cloudinary if it exists
-          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
-            if (oldPublicId) {
-              try {
-                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
-                await deleteFromCloudinary(oldPublicId, resourceType);
-              } catch (error) {
-                console.error('Error deleting old hero media from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
-          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
-        }
-      } catch (error) {
-        console.error('Error processing hero_media_url:', error);
-        return res.status(400).json({ error: `Hero media error: ${error.message}` });
-      }
-    }
-    
-    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
-    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
-        updateData.showreel_url !== oldUrls.showreel_url) {
-      try {
-        if (isBase64Video(updateData.showreel_url)) {
-          // Base64 video data received - upload to Cloudinary
-          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
-          updateData.showreel_url = uploadResult.secure_url;
-          
-          // Delete old showreel from Cloudinary if it exists
-          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
-            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
-            if (oldPublicId) {
-              try {
-                await deleteFromCloudinary(oldPublicId, 'video');
-              } catch (error) {
-                console.error('Error deleting old showreel from Cloudinary:', error);
-                // Continue even if deletion fails
-              }
-            }
-          }
-        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
-          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
-        }
-      } catch (error) {
-        console.error('Error processing showreel_url:', error);
-        return res.status(400).json({ error: `Showreel error: ${error.message}` });
       }
     }
     
@@ -2736,6 +1758,26 @@ router.put('/:id', protect, async (req, res) => {
       }
     }
     
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
+            }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
+          }
+        }
+      }
+    }
+    
     Object.assign(wall, updateData);
     await wall.save();
     
@@ -2916,6 +1958,1244 @@ router.put('/:id', protect, async (req, res) => {
       } catch (error) {
         console.error('Error processing showreel_url:', error);
         return res.status(400).json({ error: `Showreel error: ${error.message}` });
+      }
+    }
+    
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
+            }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
+          }
+        }
+      }
+    }
+    
+    Object.assign(wall, updateData);
+    await wall.save();
+    
+    // Populate before returning
+    const populatedWall = await Wall.findById(wall._id)
+      .populate('user_id', 'name email rating location associations');
+    
+    const wallObj = populatedWall.toObject();
+    
+    // Add rating directly from populated user_id (profile) for easier frontend access
+    if (wallObj.user_id && wallObj.user_id.rating) {
+      wallObj.rating = wallObj.user_id.rating;
+    } else if (profile.rating) {
+      // Fallback to profile rating if populate didn't work
+      wallObj.rating = profile.rating;
+    }
+    
+    res.status(201).json(wallObj);
+  } catch (error) {
+    console.error('Create wall error:', error);
+    const errorMessage = error.message || 'Failed to create wall';
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// @route   PUT /api/walls/:id
+// @desc    Update a wall
+// @access  Private
+router.put('/:id', protect, async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ user_id: req.user.id });
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+    
+    const wall = await Wall.findById(req.params.id);
+    if (!wall) {
+      return res.status(404).json({ error: 'Wall not found' });
+    }
+    
+    // Check if user owns the wall
+    if (wall.user_id.toString() !== profile._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Prepare update data
+    const updateData = { ...req.body };
+    
+    // Track old URLs to delete from Cloudinary if replaced
+    const oldUrls = {
+      logo_url: wall.logo_url,
+      hero_media_url: wall.hero_media_url,
+      showreel_url: wall.showreel_url
+    };
+    
+    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
+      try {
+        if (isBase64Image(updateData.logo_url)) {
+          // Base64 data received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.logo_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Logo image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
+          updateData.logo_url = uploadResult.secure_url;
+          
+          // Delete old logo from Cloudinary if it exists
+          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'image');
+              } catch (error) {
+                console.error('Error deleting old logo from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
+          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing logo_url:', error);
+        return res.status(400).json({ error: `Logo image error: ${error.message}` });
+      }
+    }
+    
+    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
+      try {
+        if (isBase64Image(updateData.hero_media_url)) {
+          // Base64 image received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Hero image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'image' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'image';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (isBase64Video(updateData.hero_media_url)) {
+          // Base64 video received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'video' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'video';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
+          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing hero_media_url:', error);
+        return res.status(400).json({ error: `Hero media error: ${error.message}` });
+      }
+    }
+    
+    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
+        updateData.showreel_url !== oldUrls.showreel_url) {
+      try {
+        if (isBase64Video(updateData.showreel_url)) {
+          // Base64 video data received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
+          updateData.showreel_url = uploadResult.secure_url;
+          
+          // Delete old showreel from Cloudinary if it exists
+          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'video');
+              } catch (error) {
+                console.error('Error deleting old showreel from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
+          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
+        }
+      } catch (error) {
+        console.error('Error processing showreel_url:', error);
+        return res.status(400).json({ error: `Showreel error: ${error.message}` });
+      }
+    }
+    
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
+            }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
+          }
+        }
+      }
+    }
+    
+    Object.assign(wall, updateData);
+    await wall.save();
+    
+    // Populate before returning
+    const populatedWall = await Wall.findById(wall._id)
+      .populate('user_id', 'name email rating location associations');
+    
+    const wallObj = populatedWall.toObject();
+    
+    // Add rating directly from populated user_id (profile) for easier frontend access
+    if (wallObj.user_id && wallObj.user_id.rating) {
+      wallObj.rating = wallObj.user_id.rating;
+    } else if (profile.rating) {
+      // Fallback to profile rating if populate didn't work
+      wallObj.rating = profile.rating;
+    }
+    
+    res.status(201).json(wallObj);
+  } catch (error) {
+    console.error('Create wall error:', error);
+    const errorMessage = error.message || 'Failed to create wall';
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// @route   PUT /api/walls/:id
+// @desc    Update a wall
+// @access  Private
+router.put('/:id', protect, async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ user_id: req.user.id });
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+    
+    const wall = await Wall.findById(req.params.id);
+    if (!wall) {
+      return res.status(404).json({ error: 'Wall not found' });
+    }
+    
+    // Check if user owns the wall
+    if (wall.user_id.toString() !== profile._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Prepare update data
+    const updateData = { ...req.body };
+    
+    // Track old URLs to delete from Cloudinary if replaced
+    const oldUrls = {
+      logo_url: wall.logo_url,
+      hero_media_url: wall.hero_media_url,
+      showreel_url: wall.showreel_url
+    };
+    
+    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
+      try {
+        if (isBase64Image(updateData.logo_url)) {
+          // Base64 data received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.logo_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Logo image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
+          updateData.logo_url = uploadResult.secure_url;
+          
+          // Delete old logo from Cloudinary if it exists
+          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'image');
+              } catch (error) {
+                console.error('Error deleting old logo from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
+          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing logo_url:', error);
+        return res.status(400).json({ error: `Logo image error: ${error.message}` });
+      }
+    }
+    
+    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
+      try {
+        if (isBase64Image(updateData.hero_media_url)) {
+          // Base64 image received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Hero image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'image' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'image';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (isBase64Video(updateData.hero_media_url)) {
+          // Base64 video received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'video' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'video';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
+          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing hero_media_url:', error);
+        return res.status(400).json({ error: `Hero media error: ${error.message}` });
+      }
+    }
+    
+    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
+        updateData.showreel_url !== oldUrls.showreel_url) {
+      try {
+        if (isBase64Video(updateData.showreel_url)) {
+          // Base64 video data received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
+          updateData.showreel_url = uploadResult.secure_url;
+          
+          // Delete old showreel from Cloudinary if it exists
+          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'video');
+              } catch (error) {
+                console.error('Error deleting old showreel from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
+          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
+        }
+      } catch (error) {
+        console.error('Error processing showreel_url:', error);
+        return res.status(400).json({ error: `Showreel error: ${error.message}` });
+      }
+    }
+    
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
+            }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
+          }
+        }
+      }
+    }
+    
+    Object.assign(wall, updateData);
+    await wall.save();
+    
+    // Populate before returning
+    const populatedWall = await Wall.findById(wall._id)
+      .populate('user_id', 'name email rating location associations');
+    
+    const wallObj = populatedWall.toObject();
+    
+    // Add rating directly from populated user_id (profile) for easier frontend access
+    if (wallObj.user_id && wallObj.user_id.rating) {
+      wallObj.rating = wallObj.user_id.rating;
+    } else if (profile.rating) {
+      // Fallback to profile rating if populate didn't work
+      wallObj.rating = profile.rating;
+    }
+    
+    res.status(201).json(wallObj);
+  } catch (error) {
+    console.error('Create wall error:', error);
+    const errorMessage = error.message || 'Failed to create wall';
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// @route   PUT /api/walls/:id
+// @desc    Update a wall
+// @access  Private
+router.put('/:id', protect, async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ user_id: req.user.id });
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+    
+    const wall = await Wall.findById(req.params.id);
+    if (!wall) {
+      return res.status(404).json({ error: 'Wall not found' });
+    }
+    
+    // Check if user owns the wall
+    if (wall.user_id.toString() !== profile._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Prepare update data
+    const updateData = { ...req.body };
+    
+    // Track old URLs to delete from Cloudinary if replaced
+    const oldUrls = {
+      logo_url: wall.logo_url,
+      hero_media_url: wall.hero_media_url,
+      showreel_url: wall.showreel_url
+    };
+    
+    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
+      try {
+        if (isBase64Image(updateData.logo_url)) {
+          // Base64 data received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.logo_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Logo image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
+          updateData.logo_url = uploadResult.secure_url;
+          
+          // Delete old logo from Cloudinary if it exists
+          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'image');
+              } catch (error) {
+                console.error('Error deleting old logo from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
+          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing logo_url:', error);
+        return res.status(400).json({ error: `Logo image error: ${error.message}` });
+      }
+    }
+    
+    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
+      try {
+        if (isBase64Image(updateData.hero_media_url)) {
+          // Base64 image received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Hero image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'image' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'image';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (isBase64Video(updateData.hero_media_url)) {
+          // Base64 video received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'video' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'video';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
+          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing hero_media_url:', error);
+        return res.status(400).json({ error: `Hero media error: ${error.message}` });
+      }
+    }
+    
+    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
+        updateData.showreel_url !== oldUrls.showreel_url) {
+      try {
+        if (isBase64Video(updateData.showreel_url)) {
+          // Base64 video data received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
+          updateData.showreel_url = uploadResult.secure_url;
+          
+          // Delete old showreel from Cloudinary if it exists
+          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'video');
+              } catch (error) {
+                console.error('Error deleting old showreel from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
+          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
+        }
+      } catch (error) {
+        console.error('Error processing showreel_url:', error);
+        return res.status(400).json({ error: `Showreel error: ${error.message}` });
+      }
+    }
+    
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
+            }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
+          }
+        }
+      }
+    }
+    
+    Object.assign(wall, updateData);
+    await wall.save();
+    
+    // Populate before returning
+    const populatedWall = await Wall.findById(wall._id)
+      .populate('user_id', 'name email rating location associations');
+    
+    const wallObj = populatedWall.toObject();
+    
+    // Add rating directly from populated user_id (profile) for easier frontend access
+    if (wallObj.user_id && wallObj.user_id.rating) {
+      wallObj.rating = wallObj.user_id.rating;
+    } else if (profile.rating) {
+      // Fallback to profile rating if populate didn't work
+      wallObj.rating = profile.rating;
+    }
+    
+    res.status(201).json(wallObj);
+  } catch (error) {
+    console.error('Create wall error:', error);
+    const errorMessage = error.message || 'Failed to create wall';
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// @route   PUT /api/walls/:id
+// @desc    Update a wall
+// @access  Private
+router.put('/:id', protect, async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ user_id: req.user.id });
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+    
+    const wall = await Wall.findById(req.params.id);
+    if (!wall) {
+      return res.status(404).json({ error: 'Wall not found' });
+    }
+    
+    // Check if user owns the wall
+    if (wall.user_id.toString() !== profile._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Prepare update data
+    const updateData = { ...req.body };
+    
+    // Track old URLs to delete from Cloudinary if replaced
+    const oldUrls = {
+      logo_url: wall.logo_url,
+      hero_media_url: wall.hero_media_url,
+      showreel_url: wall.showreel_url
+    };
+    
+    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
+      try {
+        if (isBase64Image(updateData.logo_url)) {
+          // Base64 data received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.logo_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Logo image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
+          updateData.logo_url = uploadResult.secure_url;
+          
+          // Delete old logo from Cloudinary if it exists
+          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'image');
+              } catch (error) {
+                console.error('Error deleting old logo from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
+          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing logo_url:', error);
+        return res.status(400).json({ error: `Logo image error: ${error.message}` });
+      }
+    }
+    
+    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
+      try {
+        if (isBase64Image(updateData.hero_media_url)) {
+          // Base64 image received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Hero image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'image' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'image';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (isBase64Video(updateData.hero_media_url)) {
+          // Base64 video received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'video' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'video';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
+          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing hero_media_url:', error);
+        return res.status(400).json({ error: `Hero media error: ${error.message}` });
+      }
+    }
+    
+    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
+        updateData.showreel_url !== oldUrls.showreel_url) {
+      try {
+        if (isBase64Video(updateData.showreel_url)) {
+          // Base64 video data received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
+          updateData.showreel_url = uploadResult.secure_url;
+          
+          // Delete old showreel from Cloudinary if it exists
+          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'video');
+              } catch (error) {
+                console.error('Error deleting old showreel from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
+          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
+        }
+      } catch (error) {
+        console.error('Error processing showreel_url:', error);
+        return res.status(400).json({ error: `Showreel error: ${error.message}` });
+      }
+    }
+    
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
+            }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
+          }
+        }
+      }
+    }
+    
+    Object.assign(wall, updateData);
+    await wall.save();
+    
+    // Populate before returning
+    const populatedWall = await Wall.findById(wall._id)
+      .populate('user_id', 'name email rating location associations');
+    
+    const wallObj = populatedWall.toObject();
+    
+    // Add rating directly from populated user_id (profile) for easier frontend access
+    if (wallObj.user_id && wallObj.user_id.rating) {
+      wallObj.rating = wallObj.user_id.rating;
+    } else if (profile.rating) {
+      // Fallback to profile rating if populate didn't work
+      wallObj.rating = profile.rating;
+    }
+    
+    res.status(201).json(wallObj);
+  } catch (error) {
+    console.error('Create wall error:', error);
+    const errorMessage = error.message || 'Failed to create wall';
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// @route   PUT /api/walls/:id
+// @desc    Update a wall
+// @access  Private
+router.put('/:id', protect, async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ user_id: req.user.id });
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+    
+    const wall = await Wall.findById(req.params.id);
+    if (!wall) {
+      return res.status(404).json({ error: 'Wall not found' });
+    }
+    
+    // Check if user owns the wall
+    if (wall.user_id.toString() !== profile._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Prepare update data
+    const updateData = { ...req.body };
+    
+    // Track old URLs to delete from Cloudinary if replaced
+    const oldUrls = {
+      logo_url: wall.logo_url,
+      hero_media_url: wall.hero_media_url,
+      showreel_url: wall.showreel_url
+    };
+    
+    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
+      try {
+        if (isBase64Image(updateData.logo_url)) {
+          // Base64 data received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.logo_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Logo image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
+          updateData.logo_url = uploadResult.secure_url;
+          
+          // Delete old logo from Cloudinary if it exists
+          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'image');
+              } catch (error) {
+                console.error('Error deleting old logo from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
+          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing logo_url:', error);
+        return res.status(400).json({ error: `Logo image error: ${error.message}` });
+      }
+    }
+    
+    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
+      try {
+        if (isBase64Image(updateData.hero_media_url)) {
+          // Base64 image received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Hero image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'image' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'image';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (isBase64Video(updateData.hero_media_url)) {
+          // Base64 video received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'video' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'video';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
+          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing hero_media_url:', error);
+        return res.status(400).json({ error: `Hero media error: ${error.message}` });
+      }
+    }
+    
+    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
+        updateData.showreel_url !== oldUrls.showreel_url) {
+      try {
+        if (isBase64Video(updateData.showreel_url)) {
+          // Base64 video data received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
+          updateData.showreel_url = uploadResult.secure_url;
+          
+          // Delete old showreel from Cloudinary if it exists
+          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'video');
+              } catch (error) {
+                console.error('Error deleting old showreel from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
+          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
+        }
+      } catch (error) {
+        console.error('Error processing showreel_url:', error);
+        return res.status(400).json({ error: `Showreel error: ${error.message}` });
+      }
+    }
+    
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
+            }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
+          }
+        }
+      }
+    }
+    
+    Object.assign(wall, updateData);
+    await wall.save();
+    
+    // Populate before returning
+    const populatedWall = await Wall.findById(wall._id)
+      .populate('user_id', 'name email rating location associations');
+    
+    const wallObj = populatedWall.toObject();
+    
+    // Add rating directly from populated user_id (profile) for easier frontend access
+    if (wallObj.user_id && wallObj.user_id.rating) {
+      wallObj.rating = wallObj.user_id.rating;
+    } else if (profile.rating) {
+      // Fallback to profile rating if populate didn't work
+      wallObj.rating = profile.rating;
+    }
+    
+    res.status(201).json(wallObj);
+  } catch (error) {
+    console.error('Create wall error:', error);
+    const errorMessage = error.message || 'Failed to create wall';
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// @route   PUT /api/walls/:id
+// @desc    Update a wall
+// @access  Private
+router.put('/:id', protect, async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ user_id: req.user.id });
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+    
+    const wall = await Wall.findById(req.params.id);
+    if (!wall) {
+      return res.status(404).json({ error: 'Wall not found' });
+    }
+    
+    // Check if user owns the wall
+    if (wall.user_id.toString() !== profile._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    
+    // Prepare update data
+    const updateData = { ...req.body };
+    
+    // Track old URLs to delete from Cloudinary if replaced
+    const oldUrls = {
+      logo_url: wall.logo_url,
+      hero_media_url: wall.hero_media_url,
+      showreel_url: wall.showreel_url
+    };
+    
+    // Handle logo_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.logo_url && updateData.logo_url !== oldUrls.logo_url) {
+      try {
+        if (isBase64Image(updateData.logo_url)) {
+          // Base64 data received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.logo_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Logo image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.logo_url, 'logos', 'logo', 'image');
+          updateData.logo_url = uploadResult.secure_url;
+          
+          // Delete old logo from Cloudinary if it exists
+          if (oldUrls.logo_url && isCloudinaryUrl(oldUrls.logo_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.logo_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'image');
+              } catch (error) {
+                console.error('Error deleting old logo from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.logo_url) && !isEmbedUrl(updateData.logo_url)) {
+          return res.status(400).json({ error: 'Logo URL must be a base64 image, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing logo_url:', error);
+        return res.status(400).json({ error: `Logo image error: ${error.message}` });
+      }
+    }
+    
+    // Handle hero_media_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.hero_media_url && updateData.hero_media_url !== oldUrls.hero_media_url) {
+      try {
+        if (isBase64Image(updateData.hero_media_url)) {
+          // Base64 image received - validate size before uploading (10MB max for images)
+          const validation = validateBase64ImageSize(updateData.hero_media_url, 10);
+          if (!validation.valid) {
+            return res.status(400).json({ error: `Hero image: ${validation.error}` });
+          }
+          // Upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'image');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'image' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'image';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (isBase64Video(updateData.hero_media_url)) {
+          // Base64 video received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.hero_media_url, 'hero', 'hero', 'video');
+          updateData.hero_media_url = uploadResult.secure_url;
+          // Set hero_media_type to 'video' if not specified
+          if (!updateData.hero_media_type) {
+            updateData.hero_media_type = 'video';
+          }
+          
+          // Delete old hero media from Cloudinary if it exists
+          if (oldUrls.hero_media_url && isCloudinaryUrl(oldUrls.hero_media_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.hero_media_url);
+            if (oldPublicId) {
+              try {
+                const resourceType = wall.hero_media_type === 'video' ? 'video' : 'image';
+                await deleteFromCloudinary(oldPublicId, resourceType);
+              } catch (error) {
+                console.error('Error deleting old hero media from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.hero_media_url) && !isEmbedUrl(updateData.hero_media_url)) {
+          return res.status(400).json({ error: 'Hero media URL must be a base64 image/video, Cloudinary URL, or embed URL' });
+        }
+      } catch (error) {
+        console.error('Error processing hero_media_url:', error);
+        return res.status(400).json({ error: `Hero media error: ${error.message}` });
+      }
+    }
+    
+    // Handle showreel_url: upload base64 to Cloudinary, delete old if replaced
+    if (updateData.showreel_url && updateData.showreel_type === 'upload' && 
+        updateData.showreel_url !== oldUrls.showreel_url) {
+      try {
+        if (isBase64Video(updateData.showreel_url)) {
+          // Base64 video data received - upload to Cloudinary
+          const uploadResult = await uploadBase64ToCloudinary(updateData.showreel_url, 'showreels', 'showreel', 'video');
+          updateData.showreel_url = uploadResult.secure_url;
+          
+          // Delete old showreel from Cloudinary if it exists
+          if (oldUrls.showreel_url && isCloudinaryUrl(oldUrls.showreel_url)) {
+            const oldPublicId = extractPublicIdFromUrl(oldUrls.showreel_url);
+            if (oldPublicId) {
+              try {
+                await deleteFromCloudinary(oldPublicId, 'video');
+              } catch (error) {
+                console.error('Error deleting old showreel from Cloudinary:', error);
+                // Continue even if deletion fails
+              }
+            }
+          }
+        } else if (!isCloudinaryUrl(updateData.showreel_url)) {
+          return res.status(400).json({ error: 'Showreel URL must be a base64 video or Cloudinary URL when type is upload' });
+        }
+      } catch (error) {
+        console.error('Error processing showreel_url:', error);
+        return res.status(400).json({ error: `Showreel error: ${error.message}` });
+      }
+    }
+    
+    // Handle associations: upload base64 images to Cloudinary
+    if (Array.isArray(updateData.associations)) {
+      for (let i = 0; i < updateData.associations.length; i++) {
+        const assoc = updateData.associations[i];
+        if (assoc && assoc.image && isBase64Image(assoc.image)) {
+          try {
+            const validation = validateBase64ImageSize(assoc.image, 10);
+            if (!validation.valid) {
+              return res.status(400).json({ error: `Association image ${i + 1}: ${validation.error}` });
+            }
+            const uploadResult = await uploadBase64ToCloudinary(assoc.image, 'associations', 'association', 'image');
+            updateData.associations[i] = { ...assoc, image: uploadResult.secure_url };
+          } catch (error) {
+            console.error('Error processing association image:', error);
+            return res.status(400).json({ error: `Association image ${i + 1}: ${error.message}` });
+          }
+        }
       }
     }
     
