@@ -42,7 +42,13 @@ const wallSchema = new mongoose.Schema({
   view_count: {
     type: Number,
     default: 0
-  }
+  },
+  associations: [{
+    name: { type: String, required: true },
+    description: String,
+    image: String,
+    url: String
+  }]
 }, {
   timestamps: true
 });
